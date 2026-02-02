@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}用户习惯{% endblock %}
+{% block header %}{{ user['username'] }} - 习惯列表{% endblock %}
+
+{% block content %}
+    <div class="mb-3">
+        <h2>习惯列表</h2>
+    </div>
+    
+    <div class="table-responsive">
+        <table class="table table-striped table-sm">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>名称</th>
+                    <th>频率</th>
+                    <th>目标</th>
+                    <th>开始日期</th>
+                    <th>结束日期</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for habit in habits %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ habit['name'] }}</td>
+                    <td>{{ habit['frequency'] }}</td>
+                    <td>{{ habit['target'] }}</td>
+                    <td>{{ habit['start_date'] }}</td>
+                    <td>{{ habit['end_date'] or '无' }}</td>
+                    <td>{{ habit['created_at'] }}</td>
+                    <td>
+                        <a href="#" class="btn btn-sm btn-outline-primary">查看详情</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% endblock %}

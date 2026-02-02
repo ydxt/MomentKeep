@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}用户详情{% endblock %}
+{% block header %}用户详情 - {{ user['username'] }}{% endblock %}
+
+{% block content %}
+    <div class="row">
+        <div class="col-md-4">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h3 class="card-title">用户基本信息</h3>
+                </div>
+                <div class="card-body">
+                    <dl class="row">
+                        <dt class="col-sm-4">用户名</dt>
+                        <dd class="col-sm-8">{{ user['username'] }}</dd>
+                        <dt class="col-sm-4">邮箱</dt>
+                        <dd class="col-sm-8">{{ user['email'] }}</dd>
+                        <dt class="col-sm-4">创建时间</dt>
+                        <dd class="col-sm-8">{{ user['created_at'] }}</dd>
+                        <dt class="col-sm-4">更新时间</dt>
+                        <dd class="col-sm-8">{{ user['updated_at'] }}</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-8">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h3 class="card-title">数据统计</h3>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="card text-center">
+                                <div class="card-body">
+                                    <h5 class="card-title">日记数量</h5>
+                                    <p class="card-text display-4">{{ journal_count }}</p>
+                                    <a href="{{ url_for('admin_user_journals', user_id=user['id']) }}" class="btn btn-primary">查看日记</a>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card text-center">
+                                <div class="card-body">
+                                    <h5 class="card-title">分类数量</h5>
+                                    <p class="card-text display-4">{{ category_count }}</p>
+                                    <a href="{{ url_for('admin_user_categories', user_id=user['id']) }}" class="btn btn-primary">查看分类</a>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card text-center">
+                                <div class="card-body">
+                                    <h5 class="card-title">习惯数量</h5>
+                                    <p class="card-text display-4">{{ habit_count }}</p>
+                                    <a href="{{ url_for('admin_user_habits', user_id=user['id']) }}" class="btn btn-primary">查看习惯</a>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card text-center">
+                                <div class="card-body">
+                                    <h5 class="card-title">待办事项</h5>
+                                    <p class="card-text display-4">{{ todo_count }}</p>
+                                    <a href="{{ url_for('admin_user_todos', user_id=user['id']) }}" class="btn btn-primary">查看待办</a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
