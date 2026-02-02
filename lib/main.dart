@@ -68,12 +68,8 @@ void main() async {
     autoCleanupService.startBackgroundCleanup();
   });
 
-  // 配置ImagePicker的相机委托（修复Windows平台相机使用问题）
-  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
-    // 在Windows平台上，ImagePicker的相机功能需要额外配置
-    // 目前我们使用标准的camera插件来提供相机支持
-    print('Windows平台相机支持已配置');
-  }
+  // Windows平台相机支持已通过直接使用camera插件实现
+  // 在minimal_journal_editor.dart中已添加平台特定处理
 
   // 为test@h.com账户充值10000积分并添加测试数据（仅首次启动时执行）
   Future.delayed(Duration.zero, () async {

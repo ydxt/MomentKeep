@@ -1068,16 +1068,8 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
 
   // 选择图片
   Future<void> _pickImage(ImageSource source) async {
-    String? path;
-    if (source == ImageSource.camera && Platform.isWindows) {
-      path = await Navigator.push<String>(
-        context, 
-        MaterialPageRoute(builder: (context) => const CameraPreviewPage())
-      );
-    } else {
-      final picked = await _imagePicker.pickImage(source: source);
-      path = picked?.path;
-    }
+    final picked = await _imagePicker.pickImage(source: source);
+    final path = picked?.path;
 
     if (path != null) {
       // 这里的逻辑：如果 _cropImage 返回 null（用户取消裁剪），

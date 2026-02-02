@@ -33,10 +33,12 @@ import 'package:moment_keep/presentation/components/journal_editor/embed_builder
 import 'package:moment_keep/presentation/components/journal_editor/simple_drawing_overlay.dart';
 import 'package:moment_keep/presentation/components/journal_editor/drawing_point.dart';
 import 'package:moment_keep/presentation/components/journal_editor/background_type.dart';
+import 'package:moment_keep/presentation/components/journal_editor/camera_capture_page.dart';
 
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
+import 'package:camera/camera.dart';
 
 import 'package:moment_keep/presentation/components/journal_editor/video_width_manager.dart';
 
@@ -709,6 +711,9 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
       selection: const TextSelection.collapsed(offset: 0),
     );
 
+    // 初始化原始媒体路径
+    _originalMediaPaths = _extractMediaPaths();
+
     // 取消旧的订阅（如果存在）
     try {
       _documentChangesSubscription.cancel();
@@ -967,6 +972,77 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
 
   /// 防抖定时器，用于优化文档变化时的重新渲染
   Timer? _documentChangeDebounceTimer;
+
+  /// Extract all media paths (images, videos, audio, files) from the document
+  Set<String> _extractMediaPaths() {
+    final Set<String> paths = {};
+    final delta = _controller.document.toDelta();
+    
+    for (final op in delta.toList()) {
+      if (op.data is flutter_quill.BlockEmbed) {
+        final embed = op.data as flutter_quill.BlockEmbed;
+        
+        // Handle image embeds
+        if (embed.type == 'image') {
+          final embedData = embed.data;
+          if (embedData is String && embedData.isNotEmpty) {
+            paths.add(embedData);
+          }
+        } 
+        // Handle custom embeds (video, audio, file)
+        else if (embed.type == 'custom') {
+          // Check if it's a CustomBlockEmbed
+          if (embed is flutter_quill.CustomBlockEmbed) {
+            final customData = embed.data;
+            if (customData is String) {
+              try {
+                final data = jsonDecode(customData);
+                if (data is Map) {
+                  // Check for video path
+                  if (data.containsKey('path')) {
+                    final path = data['path'];
+                    if (path is String && path.isNotEmpty) {
+                      paths.add(path);
+                    }
+                  }
+                  // Check for audio path
+                  else if (data.containsKey('audio')) {
+                    final audioData = data['audio'];
+                    if (audioData is Map && audioData.containsKey('path')) {
+                      final path = audioData['path'];
+                      if (path is String && path.isNotEmpty) {
+                        paths.add(path);
+                      }
+                    }
+                  }
+                  // Check for file path
+                  else if (data.containsKey('file')) {
+                    final fileData = data['file'];
+                    if (fileData is Map && fileData.containsKey('path')) {
+                      final path = fileData['path'];
+                      if (path is String && path.isNotEmpty) {
+                        paths.add(path);
+                      }
+                    }
+                  }
+                }
+              } catch (e) {
+                debugPrint('Error parsing custom embed data: $e');
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    return paths;
+  }
+
+  /// Original media paths when the editor was initialized
+  Set<String> _originalMediaPaths = {};
+  
+  /// New files created during this editing session
+  Set<String> _sessionNewFiles = {};
 
   void _onDocumentChange() {
     // 使用防抖避免频繁的重新渲染，特别是在中文输入时
@@ -1628,7 +1704,62 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
       debugPrint('=== Current paths extraction start ===');
       final delta = _controller.document.toDelta();
       for (final op in delta.toList()) {
-        if (op.data is Map) {
+        if (op.data is flutter_quill.BlockEmbed) {
+          final embed = op.data as flutter_quill.BlockEmbed;
+          
+          // Handle image embeds
+          if (embed.type == 'image') {
+            final embedData = embed.data;
+            if (embedData is String && embedData.isNotEmpty) {
+              currentPaths.add(embedData);
+            }
+          } 
+          // Handle custom embeds (video, audio, file)
+          else if (embed.type == 'custom') {
+            // Check if it's a CustomBlockEmbed
+            if (embed is flutter_quill.CustomBlockEmbed) {
+              final customData = embed.data;
+              if (customData is String) {
+                try {
+                  final data = jsonDecode(customData);
+                  if (data is Map) {
+                    // Check for video path
+                    if (data.containsKey('path')) {
+                      final path = data['path'];
+                      if (path is String && path.isNotEmpty) {
+                        currentPaths.add(path);
+                      }
+                    }
+                    // Check for audio path
+                    else if (data.containsKey('audio')) {
+                      final audioData = data['audio'];
+                      if (audioData is Map && audioData.containsKey('path')) {
+                        final path = audioData['path'];
+                        if (path is String && path.isNotEmpty) {
+                          currentPaths.add(path);
+                        }
+                      }
+                    }
+                    // Check for file path
+                    else if (data.containsKey('file')) {
+                      final fileData = data['file'];
+                      if (fileData is Map && fileData.containsKey('path')) {
+                        final path = fileData['path'];
+                        if (path is String && path.isNotEmpty) {
+                          currentPaths.add(path);
+                        }
+                      }
+                    }
+                  }
+                } catch (e) {
+                  debugPrint('Error parsing custom embed data: $e');
+                }
+              }
+            }
+          }
+        }
+        // Also check for Map data (for compatibility with older formats)
+        else if (op.data is Map) {
           final data = op.data as Map;
 
           // Extract paths from standard embeds
@@ -1729,15 +1860,6 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
                 currentPaths.add(fileInfo['path']);
               }
             }
-            // Also handle direct embed formats where the value is already the path
-            else if (embedData.values.first is String) {
-              final path = embedData.values.first as String;
-              currentPaths.add(path);
-            } else if (embedData.values.first is Map &&
-                (embedData.values.first as Map).containsKey('path')) {
-              final path = (embedData.values.first as Map)['path'] as String;
-              currentPaths.add(path);
-            }
           }
         }
       }
@@ -1747,12 +1869,18 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
       debugPrint(
           'Current filenames: ${currentPaths.map((p) => path.basename(p)).toSet()}');
 
-      // 2. Get original paths from the journal content
+      // 2. Get original paths from the journal content or initialization
       debugPrint('=== Original paths extraction start ===');
       debugPrint('Widget journal exists: ${widget.journal != null}');
       debugPrint(
           'Widget journal content length: ${widget.journal?.content.length ?? 0}');
       final originalPaths = <String>{};
+      
+      // First, use _originalMediaPaths from initialization
+      originalPaths.addAll(_originalMediaPaths);
+      debugPrint('Original paths from _originalMediaPaths: $_originalMediaPaths');
+      
+      // Then, also check widget.journal for additional paths
       if (widget.journal != null && widget.journal!.content.isNotEmpty) {
         for (final block in widget.journal!.content) {
           if (block.type == ContentBlockType.text &&
@@ -1762,7 +1890,62 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
               final doc = flutter_quill.Document.fromJson(decoded);
               final delta = doc.toDelta();
               for (final op in delta.toList()) {
-                if (op.data is Map) {
+                if (op.data is flutter_quill.BlockEmbed) {
+                  final embed = op.data as flutter_quill.BlockEmbed;
+                  
+                  // Handle image embeds
+                  if (embed.type == 'image') {
+                    final embedData = embed.data;
+                    if (embedData is String && embedData.isNotEmpty) {
+                      originalPaths.add(embedData);
+                    }
+                  } 
+                  // Handle custom embeds (video, audio, file)
+                  else if (embed.type == 'custom') {
+                    // Check if it's a CustomBlockEmbed
+                    if (embed is flutter_quill.CustomBlockEmbed) {
+                      final customData = embed.data;
+                      if (customData is String) {
+                        try {
+                          final data = jsonDecode(customData);
+                          if (data is Map) {
+                            // Check for video path
+                            if (data.containsKey('path')) {
+                              final path = data['path'];
+                              if (path is String && path.isNotEmpty) {
+                                originalPaths.add(path);
+                              }
+                            }
+                            // Check for audio path
+                            else if (data.containsKey('audio')) {
+                              final audioData = data['audio'];
+                              if (audioData is Map && audioData.containsKey('path')) {
+                                final path = audioData['path'];
+                                if (path is String && path.isNotEmpty) {
+                                  originalPaths.add(path);
+                                }
+                              }
+                            }
+                            // Check for file path
+                            else if (data.containsKey('file')) {
+                              final fileData = data['file'];
+                              if (fileData is Map && fileData.containsKey('path')) {
+                                final path = fileData['path'];
+                                if (path is String && path.isNotEmpty) {
+                                  originalPaths.add(path);
+                                }
+                              }
+                            }
+                          }
+                        } catch (e) {
+                          debugPrint('Error parsing custom embed data: $e');
+                        }
+                      }
+                    }
+                  }
+                }
+                // Also check for Map data (for compatibility with older formats)
+                else if (op.data is Map) {
                   final data = op.data as Map;
 
                   // Extract paths from standard embeds
@@ -1902,6 +2085,7 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
           currentPaths.map((p) => path.basename(p)).toSet();
       debugPrint('Current filenames: $currentFilenames');
 
+      // Check original paths (existing files from initialization)
       for (final originalPath in originalPaths) {
         debugPrint('Checking original path: $originalPath');
         // Check if the original path is in current paths
@@ -1923,6 +2107,30 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
         }
       }
 
+      // Check session new files (files created during this editing session)
+      debugPrint('=== Session new files analysis start ===');
+      debugPrint('Session new files: $_sessionNewFiles');
+      for (final newFilePath in _sessionNewFiles) {
+        debugPrint('Checking session new file: $newFilePath');
+        // Check if the new file path is in current paths
+        if (!currentPaths.contains(newFilePath)) {
+          // Check if just the filename is in current filenames
+          final newFilename = path.basename(newFilePath);
+          debugPrint(
+              'Session new file not in current paths, checking filename: $newFilename');
+          if (!currentFilenames.contains(newFilename)) {
+            unusedPaths.add(newFilePath);
+            debugPrint('Added to unused paths: $newFilePath');
+          } else {
+            debugPrint(
+                'Filename $newFilename is still in use, skipping deletion');
+          }
+        } else {
+          debugPrint(
+              'Session new file is still in current paths, skipping deletion');
+        }
+      }
+
       debugPrint('=== Unused files analysis completed ===');
       debugPrint(
           'Found ${unusedPaths.length} unused files to delete: $unusedPaths');
@@ -1938,6 +2146,10 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
         }
       }
 
+      // 5. Clear session new files after cleanup
+      _sessionNewFiles.clear();
+      debugPrint('=== Session new files cleared ===');
+
       debugPrint('=== File cleanup completed ===');
     } catch (e) {
       debugPrint('Error cleaning up files: $e');
@@ -1945,11 +2157,54 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
   }
 
   Future<void> _insertImage() async {
-    final result = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (result != null) {
-      try {
+    // Show modal bottom sheet with gallery and camera options
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library),
+                title: const Text('从相册选择'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _pickImageFromSource(ImageSource.gallery);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.camera_alt),
+                title: const Text('拍照'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _showCameraOptions();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickImageFromSource(ImageSource source) async {
+    try {
+      String? imagePath;
+      
+      // On Windows, use camera plugin directly for camera operations
+      if (source == ImageSource.camera && Platform.isWindows) {
+        imagePath = await _takePictureWithCameraPlugin();
+      } else {
+        // On other platforms or for gallery operations, use image_picker
+        final result = await ImagePicker().pickImage(source: source);
+        imagePath = result?.path;
+      }
+      
+      if (imagePath != null) {
         // Save image to local storage and get full path
-        final newPath = await _moveFileToSettingsDir(result.path, 'images');
+        final newPath = await _moveFileToSettingsDir(imagePath, 'images');
         if (newPath != null) {
           // Use the full path in the editor
           final selection = _controller.selection;
@@ -1966,9 +2221,44 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
           );
           _quillFocusNode.requestFocus();
         }
-      } catch (e) {
-        debugPrint('Error inserting image: $e');
       }
+    } catch (e) {
+      debugPrint('Error inserting image: $e');
+    }
+  }
+
+  /// Take a picture using the camera plugin directly (for Windows platform)
+  Future<String?> _takePictureWithCameraPlugin() async {
+    try {
+      // Get available cameras
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        debugPrint('No cameras available');
+        return null;
+      }
+      
+      // Use the first camera
+      final firstCamera = cameras.first;
+      
+      // Create camera controller
+      final controller = CameraController(
+        firstCamera,
+        ResolutionPreset.medium,
+      );
+      
+      // Initialize controller
+      await controller.initialize();
+      
+      // Take picture
+      final image = await controller.takePicture();
+      
+      // Dispose controller
+      await controller.dispose();
+      
+      return image.path;
+    } catch (e) {
+      debugPrint('Error taking picture with camera plugin: $e');
+      return null;
     }
   }
 
@@ -2001,6 +2291,12 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
         default:
           storedPath = await storageService.storeFile(xFile, userId: userId);
           break;
+      }
+
+      // Add the new file to session new files list
+      if (storedPath != null) {
+        _sessionNewFiles.add(storedPath);
+        debugPrint('Added new file to session: $storedPath');
       }
 
       return storedPath;
@@ -2119,6 +2415,39 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
   }
 
   Future<void> _insertVideo() async {
+    // Show modal bottom sheet with gallery and camera options
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.video_library),
+                title: const Text('从相册选择'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _pickVideoFromFilePicker();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.camera_alt),
+                title: const Text('录制视频'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _showCameraOptions();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickVideoFromFilePicker() async {
     try {
       final result = await FilePicker.platform.pickFiles(type: FileType.video);
       if (result != null && result.files.single.path != null) {
@@ -2145,6 +2474,139 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
     } catch (e) {
       debugPrint('Error inserting video: $e');
     }
+  }
+
+  Future<void> _recordVideoFromCamera() async {
+    try {
+      String? videoPath;
+      
+      // On Windows, use camera plugin directly for camera operations
+      if (Platform.isWindows) {
+        videoPath = await _recordVideoWithCameraPlugin();
+      } else {
+        // On other platforms, use image_picker
+        final result = await ImagePicker().pickVideo(source: ImageSource.camera);
+        videoPath = result?.path;
+      }
+      
+      if (videoPath != null) {
+        final newPath = await _moveFileToSettingsDir(videoPath, 'videos');
+        if (newPath != null) {
+          final selection = _controller.selection;
+          final videoData = {'path': newPath, 'name': path.basename(newPath)};
+          _controller.replaceText(
+            selection.start,
+            selection.extentOffset - selection.start,
+            flutter_quill.BlockEmbed.custom(
+                flutter_quill.CustomBlockEmbed('video', jsonEncode(videoData))),
+            null,
+          );
+          _controller.document.insert(selection.start + 1, '\n');
+          _controller.updateSelection(
+            TextSelection.collapsed(offset: selection.start + 2),
+            flutter_quill.ChangeSource.local,
+          );
+          _quillFocusNode.requestFocus();
+        }
+      }
+    } catch (e) {
+      debugPrint('Error recording video: $e');
+    }
+  }
+
+  /// Record a video using the camera plugin directly (for Windows platform)
+  Future<String?> _recordVideoWithCameraPlugin() async {
+    try {
+      // Get available cameras
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        debugPrint('No cameras available');
+        return null;
+      }
+      
+      // Use the first camera
+      final firstCamera = cameras.first;
+      
+      // Create camera controller
+      final controller = CameraController(
+        firstCamera,
+        ResolutionPreset.medium,
+      );
+      
+      // Initialize controller
+      await controller.initialize();
+      
+      // Start recording
+      await controller.startVideoRecording();
+      
+      // Record for 10 seconds (you could implement a UI for this)
+      await Future.delayed(const Duration(seconds: 10));
+      
+      // Stop recording
+      final video = await controller.stopVideoRecording();
+      
+      // Dispose controller
+      await controller.dispose();
+      
+      return video.path;
+    } catch (e) {
+      debugPrint('Error recording video with camera plugin: $e');
+      return null;
+    }
+  }
+
+  /// Show camera options and handle the result
+  Future<void> _showCameraOptions() async {
+    // 跳转到多功能相机
+    final Map<String, dynamic>? result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const CameraCapturePage()),
+    );
+
+    if (result == null) return;
+
+    final String capturedPath = result['path'];
+    final String type = result['type'];
+
+    // Save the captured media to the user's storage directory
+    String? storedPath;
+    if (type == 'image') {
+      storedPath = await _moveFileToSettingsDir(capturedPath, 'images');
+    } else if (type == 'video') {
+      storedPath = await _moveFileToSettingsDir(capturedPath, 'videos');
+    }
+
+    if (storedPath == null) return;
+
+    final index = _controller.selection.baseOffset;
+    final length = _controller.selection.extentOffset - index;
+
+    if (type == 'image') {
+      // 插入图片
+      _controller.replaceText(index, length, flutter_quill.BlockEmbed.image(storedPath), null);
+      // 确保光标移动到图片后
+      _controller.updateSelection(
+        TextSelection.collapsed(offset: index + 1),
+        flutter_quill.ChangeSource.local,
+      );
+    } else if (type == 'video') {
+      // 插入视频
+      // 注意：确保你已经在项目中配置了 VideoEmbedBuilder
+      final videoData = {'path': storedPath, 'name': path.basename(storedPath)};
+      _controller.replaceText(
+        index,
+        length,
+        flutter_quill.BlockEmbed.custom(
+            flutter_quill.CustomBlockEmbed('video', jsonEncode(videoData))),
+        null,
+      );
+      _controller.document.insert(index + 1, '\n');
+      _controller.updateSelection(
+        TextSelection.collapsed(offset: index + 2),
+        flutter_quill.ChangeSource.local,
+      );
+    }
+    _quillFocusNode.requestFocus();
   }
 
   Future<void> _insertMoreFiles() async {
