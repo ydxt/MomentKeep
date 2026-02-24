@@ -350,6 +350,8 @@ class UserDatabaseService {
     final userType = userData['user_type'];
     Map<String, dynamic>? extensionData;
 
+    debugPrint('获取用户ID: $userId 的信息，用户类型: $userType');
+
     // 获取扩展信息
     if (userType == 0) {
       // 买家
@@ -361,6 +363,9 @@ class UserDatabaseService {
       );
       if (buyerResult.isNotEmpty) {
         extensionData = Map<String, dynamic>.from(buyerResult.first);
+        debugPrint('从买家扩展表获取的信息: $extensionData');
+      } else {
+        debugPrint('买家扩展表中没有用户ID: $userId 的信息');
       }
     } else if (userType == 1) {
       // 商家
@@ -372,6 +377,9 @@ class UserDatabaseService {
       );
       if (sellerResult.isNotEmpty) {
         extensionData = Map<String, dynamic>.from(sellerResult.first);
+        debugPrint('从商家扩展表获取的信息: $extensionData');
+      } else {
+        debugPrint('商家扩展表中没有用户ID: $userId 的信息');
       }
     } else if (userType == 2) {
       // 管理员
@@ -383,11 +391,17 @@ class UserDatabaseService {
       );
       if (adminResult.isNotEmpty) {
         extensionData = Map<String, dynamic>.from(adminResult.first);
+        debugPrint('从管理员扩展表获取的信息: $extensionData');
+      } else {
+        debugPrint('管理员扩展表中没有用户ID: $userId 的信息');
       }
     }
 
     if (extensionData != null) {
       userData.addAll(extensionData);
+      debugPrint('合并后的用户信息: $userData');
+    } else {
+      debugPrint('没有获取到用户ID: $userId 的扩展信息');
     }
 
     return userData;
@@ -398,6 +412,8 @@ class UserDatabaseService {
     final db = await database;
     int result = 0;
 
+    debugPrint('更新用户ID: $userId 的信息，userData: $userData，extensionData: $extensionData');
+
     // 不使用事务，直接更新
     // 更新用户主表（仅当有数据时）
     if (userData.isNotEmpty) {
@@ -407,6 +423,7 @@ class UserDatabaseService {
         where: 'user_id = ?',
         whereArgs: [userId],
       );
+      debugPrint('更新用户主表结果: $result');
     }
 
     // 如果提供了扩展数据，更新扩展表
@@ -420,33 +437,100 @@ class UserDatabaseService {
         limit: 1,
       );
 
-      if (userResult.isNotEmpty) {
-        final userType = userResult.first['user_type'];
+      debugPrint('获取用户类型结果: $userResult');
 
-        if (userType == 0) {
-          // 买家
-          await db.update(
-            'buyer_extensions',
-            extensionData,
-            where: 'user_id = ?',
-            whereArgs: [userId],
-          );
-        } else if (userType == 1) {
-          // 商家
-          await db.update(
-            'seller_extensions',
-            extensionData,
-            where: 'user_id = ?',
-            whereArgs: [userId],
-          );
-        } else if (userType == 2) {
-          // 管理员
-          await db.update(
-            'admin_extensions',
-            extensionData,
-            where: 'user_id = ?',
-            whereArgs: [userId],
-          );
+      int userType = 0; // 默认用户类型为买家
+      bool userExists = userResult.isNotEmpty;
+
+      if (userExists) {
+        userType = userResult.first['user_type'] as int;
+        debugPrint('用户类型: $userType');
+      } else {
+        debugPrint('数据库中没有找到用户ID: $userId 的记录，使用默认用户类型: $userType');
+        
+        // 如果用户记录不存在，尝试创建一个新的用户记录
+        try {
+          final now = DateTime.now().toIso8601String();
+          await db.insert('users', {
+            'user_id': userId,
+            'user_type': userType,
+            'status': 0,
+            'create_time': now,
+            'update_time': now,
+            'last_login_time': now,
+            'login_ip': '127.0.0.1',
+            'delete_flag': 0,
+          });
+          debugPrint('创建新用户记录成功，用户ID: $userId');
+        } catch (e) {
+          debugPrint('创建新用户记录失败: $e');
+        }
+      }
+
+      // 无论用户是否存在，都尝试更新或插入扩展数据
+      if (userType == 0) {
+        // 买家
+        final updateResult = await db.update(
+          'buyer_extensions',
+          extensionData,
+          where: 'user_id = ?',
+          whereArgs: [userId],
+        );
+        debugPrint('更新买家扩展表结果: $updateResult');
+        
+        // 如果没有记录被更新，说明扩展表中不存在对应的用户记录，需要插入一条新记录
+        if (updateResult == 0) {
+          // 确保提供所有必填字段
+          final insertData = {...extensionData};
+          insertData['user_id'] = userId;
+          // 添加必填字段的默认值
+          insertData['nickname'] = insertData['nickname'] ?? userId;
+          insertData['email'] = insertData['email'] ?? '';
+          insertData['gender'] = insertData['gender'] ?? 0;
+          insertData['birthday'] = insertData['birthday'] ?? null;
+          insertData['phone'] = insertData['phone'] ?? null;
+          insertData['password_hash'] = insertData['password_hash'] ?? '';
+          insertData['secret_question'] = insertData['secret_question'] ?? null;
+          insertData['default_address_id'] = insertData['default_address_id'] ?? null;
+          insertData['member_level'] = insertData['member_level'] ?? 0;
+          insertData['points'] = insertData['points'] ?? 0;
+          insertData['id_card_encrypt'] = insertData['id_card_encrypt'] ?? null;
+          insertData['privacy_setting'] = insertData['privacy_setting'] ?? null;
+          
+          await db.insert('buyer_extensions', insertData);
+          debugPrint('插入买家扩展表记录成功');
+        }
+      } else if (userType == 1) {
+        // 商家
+        final updateResult = await db.update(
+          'seller_extensions',
+          extensionData,
+          where: 'user_id = ?',
+          whereArgs: [userId],
+        );
+        debugPrint('更新商家扩展表结果: $updateResult');
+        
+        // 如果没有记录被更新，说明扩展表中不存在对应的用户记录，需要插入一条新记录
+        if (updateResult == 0) {
+          extensionData['user_id'] = userId;
+          await db.insert('seller_extensions', extensionData);
+          debugPrint('插入商家扩展表记录成功');
+        }
+      } else if (userType == 2) {
+        // 管理员
+        final updateResult = await db.update(
+          'admin_extensions',
+          extensionData,
+          where: 'user_id = ?',
+          whereArgs: [userId],
+        );
+        debugPrint('更新管理员扩展表结果: $updateResult');
+        
+        // 如果没有记录被更新，说明扩展表中不存在对应的用户记录，需要插入一条新记录
+        if (updateResult == 0) {
+          extensionData['user_id'] = userId;
+          await db.insert('admin_extensions', extensionData);
+          debugPrint('插入管理员扩展表记录成功');
         }
       }
     }

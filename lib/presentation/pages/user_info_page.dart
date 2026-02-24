@@ -22,6 +22,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:moment_keep/core/theme/theme_provider.dart';
 import 'package:camera/camera.dart';
 import 'package:image_cropper/image_cropper.dart';
+import 'package:moment_keep/presentation/components/journal_editor/camera_capture_page.dart';
 
 
 
@@ -420,28 +421,51 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
                                 child: ClipRRect(
                                   borderRadius: BorderRadius.circular(52),
                                   child: userAuth.avatar != null && userAuth.avatar!.isNotEmpty
-                                    ? Image(
-                                        image: FileImage(File(userAuth.avatar!)),
-                                        fit: BoxFit.cover,
-                                        width: 104,
-                                        height: 104,
-                                        errorBuilder: (context, error, stackTrace) {
-                                          return Container(
-                                            color: theme.colorScheme.surfaceVariant,
+                                    ? Builder(
+                                        builder: (context) {
+                                          // 修复头像路径格式
+                                          String avatarPath = userAuth.avatar!;
+                                          // 确保路径格式正确
+                                          avatarPath = avatarPath.replaceAll('/', Platform.pathSeparator);
+                                          avatarPath = avatarPath.replaceAll('\\', Platform.pathSeparator);
+                                          
+                                          // 检查头像文件是否存在
+                                          bool fileExists = File(avatarPath).existsSync();
+                                          
+                                          debugPrint('=== 头像加载调试信息 ===');
+                                          debugPrint('原始头像路径: ${userAuth.avatar}');
+                                          debugPrint('修复后头像路径: $avatarPath');
+                                          debugPrint('头像文件是否存在: $fileExists');
+                                          if (fileExists) {
+                                            debugPrint('头像文件大小: ${File(avatarPath).lengthSync()} bytes');
+                                          }
+                                          
+                                          return Image(
+                                            image: FileImage(File(avatarPath)),
+                                            fit: BoxFit.cover,
                                             width: 104,
                                             height: 104,
-                                            child: Center(
-                                              child: Text(
-                                                userAuth.username.isNotEmpty
-                                                    ? userAuth.username[0].toUpperCase()
-                                                    : 'U',
-                                                style: TextStyle(
-                                                  fontSize: 24,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: theme.colorScheme.onSurface,
+                                            errorBuilder: (context, error, stackTrace) {
+                                              debugPrint('头像加载错误: $error');
+                                              debugPrint('头像路径: $avatarPath');
+                                              return Container(
+                                                color: theme.colorScheme.surfaceVariant,
+                                                width: 104,
+                                                height: 104,
+                                                child: Center(
+                                                  child: Text(
+                                                    userAuth.username.isNotEmpty
+                                                        ? userAuth.username[0].toUpperCase()
+                                                        : 'U',
+                                                    style: TextStyle(
+                                                      fontSize: 24,
+                                                      fontWeight: FontWeight.bold,
+                                                      color: theme.colorScheme.onSurface,
+                                                    ),
+                                                  ),
                                                 ),
-                                              ),
-                                            ),
+                                              );
+                                            },
                                           );
                                         },
                                       )
@@ -1068,14 +1092,47 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
 
   // 选择图片
   Future<void> _pickImage(ImageSource source) async {
-    final picked = await _imagePicker.pickImage(source: source);
-    final path = picked?.path;
+    String? imagePath;
+    
+    // On Windows, use camera plugin directly for camera operations
+    if (source == ImageSource.camera && Platform.isWindows) {
+      imagePath = await _takePictureWithCameraPlugin();
+    } else {
+      // On other platforms or for gallery operations, use image_picker
+      final result = await _imagePicker.pickImage(source: source);
+      imagePath = result?.path;
+    }
 
-    if (path != null) {
+    if (imagePath != null) {
       // 这里的逻辑：如果 _cropImage 返回 null（用户取消裁剪），
       // 我们就用原始路径 path，从而实现“不选择就是原图”
-      final cropped = await _cropImage(path);
-      _updateUserAvatar(cropped?.path ?? path); 
+      final cropped = await _cropImage(imagePath);
+      _updateUserAvatar(cropped?.path ?? imagePath); 
+    }
+  }
+  
+  /// Take a picture using the camera plugin directly (for Windows platform)
+  Future<String?> _takePictureWithCameraPlugin() async {
+    try {
+      // 使用现有的相机捕获页面
+      final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => const CameraCapturePage(isVideoMode: false),
+        ),
+      );
+      
+      // 处理相机捕获页面返回的结果
+      if (result != null && result is Map<String, dynamic>) {
+        if (result['type'] == 'image' && result['path'] != null) {
+          return result['path'] as String;
+        }
+      }
+      
+      return null;
+    } catch (e) {
+      debugPrint('Error taking picture with camera plugin: $e');
+      return null;
     }
   }
 
@@ -1114,7 +1171,7 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
         }
         
         final fileName = 'avatar_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        final finalPath = '${avatarDirectory.path}/$fileName';
+        final finalPath = '${avatarDirectory.path}${Platform.pathSeparator}$fileName';
         
         // 检查源文件是否存在
         if (await File(imagePath).exists()) {
@@ -1128,15 +1185,32 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
           throw Exception('目标文件创建失败');
         }
         
+        // 打印详细的调试信息
+        debugPrint('=== 头像更新调试信息 ===');
+        debugPrint('用户ID: $userId');
+        debugPrint('头像文件路径: $finalPath');
+        debugPrint('头像文件是否存在: ${await File(finalPath).exists()}');
+        debugPrint('头像文件大小: ${await File(finalPath).length()} bytes');
+        
         // 更新数据库
+        debugPrint('更新头像到数据库...');
         await UserDatabaseService().updateUser(userId, {}, {'avatar': finalPath});
         
+        // 验证数据库中的头像路径
+        debugPrint('验证数据库中的头像路径...');
+        final userData = await UserDatabaseService().getUserById(userId);
+        debugPrint('从数据库获取的用户信息: $userData');
+        debugPrint('从数据库获取的头像路径: ${userData?['avatar']}');
+        
+        // 重新加载用户信息
         if (mounted) {
+          debugPrint('重新加载用户信息...');
           context.read<SecurityBloc>().add(LoadSecuritySettings());
           _showSuccess('头像设置成功');
         }
       }
     } catch (e) {
+      debugPrint('更新头像失败: $e');
       _showError('更新头像失败: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);

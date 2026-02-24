@@ -359,6 +359,8 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
       final nickname = userData['nickname'] ?? username;
       final avatar = userData['avatar']?.toString();
       final userEmail = userData['email']?.toString() ?? email;
+      
+      debugPrint('从数据库获取的用户头像: $avatar');
 
       return UserAuth(
         id: userData['user_id'].toString(),
