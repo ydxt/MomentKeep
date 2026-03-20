@@ -11,6 +11,7 @@ import 'package:flutter_quill/flutter_quill.dart' as flutter_quill;
 import 'package:moment_keep/presentation/pages/my_orders_page.dart';
 import 'package:moment_keep/presentation/pages/after_sales_apply_page.dart';
 import 'package:moment_keep/presentation/pages/review_page.dart';
+import 'package:moment_keep/presentation/pages/logistics_tracking_page.dart';
 import 'package:moment_keep/services/notification_service.dart';
 import 'package:moment_keep/services/database_service.dart';
 import 'package:moment_keep/services/user_database_service.dart';
@@ -1168,44 +1169,12 @@ class OrderDetailPage extends ConsumerWidget {
 
   /// 查看物流轨迹
   void _viewLogistics(BuildContext context) {
-    // 实现查看物流轨迹逻辑
     debugPrint('查看物流轨迹: ${order.id}');
-    // 显示物流信息
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const LogisticsTrackingPage(),
       ),
-      builder: (context) {
-        final theme = Theme.of(context);
-        return Container(
-          height: MediaQuery.of(context).size.height * 0.8,
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '物流信息',
-                style: TextStyle(
-                  color: theme.colorScheme.onSurface,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                '暂无物流信息',
-                style: TextStyle(
-                  color: theme.colorScheme.onSurfaceVariant,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
     );
   }
 

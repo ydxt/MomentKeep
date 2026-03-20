@@ -53,6 +53,9 @@ class _BillsPageState extends ConsumerState<BillsPage> {
     'daily_checkin': '每日打卡',
     'habit_completed': '习惯完成',
     'pomodoro_completed': '番茄钟完成',
+    'diary_completed': '日记完成',
+    'todo_completed': '待办完成',
+    'purchase': '购物消费',
   };
   
   /// 加载数据
@@ -218,7 +221,7 @@ class _BillsPageState extends ConsumerState<BillsPage> {
               ),
               const SizedBox(width: 12),
               Text(
-                NumberFormat('#,###').format(_statistics['balance']),
+                NumberFormat('#,###').format((_statistics['balance'] as num).toInt()),
                 style: TextStyle(
                   fontSize: 40,
                   color: theme.colorScheme.onSurface,
@@ -259,7 +262,7 @@ class _BillsPageState extends ConsumerState<BillsPage> {
   Widget _buildStatItem({
     required ThemeData theme,
     required String title,
-    required int value,
+    required dynamic value,
     required Color color,
   }) {
     return Column(
@@ -273,7 +276,7 @@ class _BillsPageState extends ConsumerState<BillsPage> {
         ),
         const SizedBox(height: 8),
         Text(
-          NumberFormat('#,###').format(value),
+          NumberFormat('#,###').format((value as num).toInt()),
           style: TextStyle(
             color: color,
             fontSize: 20,

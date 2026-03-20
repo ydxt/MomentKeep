@@ -6,6 +6,7 @@ import 'package:moment_keep/domain/entities/check_in_record.dart';
 import 'package:moment_keep/domain/entities/diary.dart';
 import 'package:moment_keep/domain/entities/recycle_bin.dart';
 import 'package:moment_keep/presentation/blocs/recycle_bin_bloc.dart';
+import 'package:moment_keep/services/database_service.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -110,8 +111,13 @@ class HabitError extends HabitState {
 class HabitBloc extends Bloc<HabitEvent, HabitState> {
   /// 回收箱BLoC
   final RecycleBinBloc recycleBinBloc;
+  
+  /// 数据库服务
+  final DatabaseService _databaseService;
 
-  HabitBloc(this.recycleBinBloc) : super(HabitInitial()) {
+  HabitBloc(this.recycleBinBloc) : 
+        _databaseService = DatabaseService(),
+        super(HabitInitial()) {
     on<LoadHabits>(_onLoadHabits);
     on<AddHabit>(_onAddHabit);
     on<UpdateHabit>(_onUpdateHabit);
@@ -388,15 +394,19 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
       final today = now.toIso8601String().split('T')[0];
       final isTodayChecked = habit.history.contains(today);
 
+      // 直接使用传入的分数（已经在UI层处理了正负）
+      final int finalScore = event.score;
+
       List<CheckInRecord> updatedCheckInRecords;
       if (!isTodayChecked) {
         // 如果今天还没打卡，添加新的打卡记录
         final checkInRecord = CheckInRecord(
           id: now.millisecondsSinceEpoch.toString(),
           habitId: event.habitId,
-          score: event.score,
+          score: finalScore,
           comment: event.comment,
           timestamp: now,
+          isNegative: habit.type == HabitType.negative,
         );
         updatedCheckInRecords = [...habit.checkInRecords, checkInRecord];
       } else {
@@ -410,9 +420,10 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
             return CheckInRecord(
               id: now.millisecondsSinceEpoch.toString(),
               habitId: event.habitId,
-              score: event.score,
+              score: finalScore,
               comment: event.comment,
               timestamp: now,
+              isNegative: habit.type == HabitType.negative,
             );
           }
           return record;
@@ -442,6 +453,20 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
       );
 
       _habits[index] = updatedHabit;
+
+      // 积分相关逻辑
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('user_id') ?? 'default_user';
+      
+      // 记录习惯打卡积分
+      final String habitTypeDesc = habit.type == HabitType.negative ? '减分项' : '加分项';
+      await _databaseService.updateUserPoints(
+        userId,
+        finalScore.toDouble(),
+        description: '习惯打卡($habitTypeDesc): ${habit.name}',
+        transactionType: 'habit_completed',
+        relatedId: event.habitId,
+      );
     }
 
     // 保存到SharedPreferences

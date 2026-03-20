@@ -34,6 +34,9 @@ class _MerchantProductManagementPageState extends ConsumerState<MerchantProductM
   /// 主题数据
   late ThemeData theme;
   
+  /// 当前商家ID
+  int? _currentMerchantId;
+  
   /// 分类列表数据
   List<StarCategory> _categories = [];
   
@@ -313,12 +316,39 @@ class _MerchantProductManagementPageState extends ConsumerState<MerchantProductM
   /// 从数据库加载数据
   Future<void> _loadData() async {
     try {
+      // 获取当前用户ID
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('current_user_id') ?? 'default_user';
+      
+      // 获取当前用户关联的商家信息
+      final merchants = await _productDatabaseService.getAllMerchants();
+      final userMerchant = merchants.firstWhere(
+        (m) => m.userId == userId,
+        orElse: () => merchants.isNotEmpty ? merchants.first : Merchant(
+          userId: userId,
+          name: '默认商家',
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+        ),
+      );
+      
+      _currentMerchantId = userMerchant.id;
+      debugPrint('当前商家ID: $_currentMerchantId, 商家名称: ${userMerchant.name}');
+      
       // 加载分类数据
       final categoriesMaps = await _productDatabaseService.getAllCategories();
       final categories = categoriesMaps.map((map) => StarCategory.fromMap(map)).toList();
       
-      // 加载商品数据
-      final products = await _databaseService.getAllStarProducts();
+      // 加载当前商家的商品数据
+      List<StarProduct> products;
+      if (_currentMerchantId != null) {
+        products = await _databaseService.getStarProductsByMerchantId(_currentMerchantId!);
+        debugPrint('加载商家商品: ${products.length} 个');
+      } else {
+        // 如果没有商家ID，加载所有商品（兼容旧数据）
+        products = await _databaseService.getAllStarProducts();
+        debugPrint('加载所有商品: ${products.length} 个');
+      }
       
       setState(() {
         _categories = categories;

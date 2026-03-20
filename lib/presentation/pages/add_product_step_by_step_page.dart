@@ -10,6 +10,7 @@ import 'package:moment_keep/core/services/storage_service.dart';
 import 'package:moment_keep/core/services/image_loader_service.dart';
 import 'package:moment_keep/domain/entities/star_exchange.dart';
 import 'package:moment_keep/services/database_service.dart';
+import 'package:moment_keep/services/product_database_service.dart';
 import 'package:moment_keep/core/theme/theme_provider.dart';
 
 /// 新增商品分步填写页面
@@ -27,8 +28,12 @@ class _AddProductStepByStepPageState extends ConsumerState<AddProductStepByStepP
   bool _isAutoSaving = false;
   bool _isSubmitting = false;
   final DatabaseService _databaseService = DatabaseService();
+  final ProductDatabaseService _productDatabaseService = ProductDatabaseService();
   final StorageService _storageService = StorageService();
   SharedPreferences? _prefs;
+  
+  /// 当前商家ID
+  int? _currentMerchantId;
   
   // 草稿自动保存相关
   static const String _draftKey = 'add_product_draft';
@@ -181,6 +186,9 @@ class _AddProductStepByStepPageState extends ConsumerState<AddProductStepByStepP
   void initState() {
     super.initState();
     
+    // 加载当前商家ID
+    _loadCurrentMerchantId();
+    
     // 初始化输入控制器
     _productNameController = TextEditingController(text: _formData['name']);
     _productCodeController = TextEditingController(text: _formData['productCode']);
@@ -272,6 +280,31 @@ class _AddProductStepByStepPageState extends ConsumerState<AddProductStepByStepP
   Future<void> _initSharedPreferences() async {
     _prefs = await SharedPreferences.getInstance();
     _loadDraft();
+  }
+  
+  /// 加载当前商家ID
+  Future<void> _loadCurrentMerchantId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getString('current_user_id') ?? 'default_user';
+      
+      // 获取当前用户关联的商家信息
+      final merchants = await _productDatabaseService.getAllMerchants();
+      final userMerchant = merchants.firstWhere(
+        (m) => m.userId == userId,
+        orElse: () => merchants.isNotEmpty ? merchants.first : Merchant(
+          userId: userId,
+          name: '默认商家',
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+        ),
+      );
+      
+      _currentMerchantId = userMerchant.id;
+      debugPrint('添加商品页面 - 当前商家ID: $_currentMerchantId');
+    } catch (e) {
+      debugPrint('加载商家ID失败: $e');
+    }
   }
   
   /// 加载草稿
@@ -1298,6 +1331,7 @@ class _AddProductStepByStepPageState extends ConsumerState<AddProductStepByStepP
         costPrice: costPrice,
         stock: _formData['stock'],
         categoryId: _formData['categoryId'] ?? 0, // 设置默认值0
+        merchantId: widget.product?.merchantId ?? _currentMerchantId,
         brand: _formData['brand'],
         tags: List<String>.from(_formData['tags']),
         categoryPath: widget.product?.categoryPath,

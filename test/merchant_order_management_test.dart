@@ -210,7 +210,8 @@ void main() {
       await productDatabaseService.insertOrder(testOrder);
 
       // 更新订单状态为已发货
-      await databaseService.updateOrderStatus(testOrder['id'] as String, '已发货');
+      final dbService = DatabaseService();
+      await dbService.updateOrderStatus(testOrder['id'] as String, '已发货');
 
       // 获取更新后的订单
       final orders = await productDatabaseService.getAllOrders();
@@ -253,13 +254,16 @@ void main() {
       // 插入测试订单
       await productDatabaseService.insertOrder(testOrder);
 
+      // 创建数据库服务实例
+      final dbService = DatabaseService();
+
       // 更新订单的买家信息
       final updatedInfo = {
         'buyer_name': '更新后的买家名称',
         'buyer_phone': '13900139000',
       };
 
-      await databaseService.updateOrder(testOrder['id'] as String, updatedInfo);
+      await dbService.updateOrder(testOrder['id'] as String, updatedInfo);
 
       // 获取更新后的订单
       final orders = await productDatabaseService.getAllOrders();

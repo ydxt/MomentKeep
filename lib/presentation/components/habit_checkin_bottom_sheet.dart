@@ -144,11 +144,11 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
 
               // 评分标题
               Text(
-                '本次打卡质量',
+                widget.habit.type == HabitType.negative ? '本次情况' : '本次打卡质量',
                 style: TextStyle(
                   fontSize: isPC ? 18 : 16,
                   fontWeight: FontWeight.w500,
-                  color: Colors.grey[700],
+                  color: widget.habit.type == HabitType.negative ? Colors.red[700] : Colors.grey[700],
                 ),
               ),
 
@@ -178,7 +178,9 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
                                           ? Icons.star
                                           : Icons.star_border,
                                       size: isPC ? 48 : 40,
-                                      color: const Color(0xFFFFD700),
+                                      color: widget.habit.type == HabitType.negative 
+                                          ? const Color(0xFFEF4444) 
+                                          : const Color(0xFFFFD700),
                                       // 添加点击反馈
                                       semanticLabel: '$starRating 星',
                                     ),
@@ -197,7 +199,9 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
                           style: TextStyle(
                             fontSize: isPC ? 20 : 18,
                             fontWeight: FontWeight.bold,
-                            color: AppTheme.secondaryColor,
+                            color: widget.habit.type == HabitType.negative 
+                                ? const Color(0xFFEF4444) 
+                                : AppTheme.secondaryColor,
                           ),
                         ),
                       ],
@@ -224,20 +228,26 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
                             style: TextStyle(
                               fontSize: isPC ? 32 : 28,
                               fontWeight: FontWeight.bold,
-                              color: const Color(0xFFFFD700),
+                              color: widget.habit.type == HabitType.negative 
+                                  ? const Color(0xFFEF4444) 
+                                  : const Color(0xFFFFD700),
                             ),
                             decoration: InputDecoration(
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
-                                borderSide: const BorderSide(
-                                  color: Color(0xFFFFD700),
+                                borderSide: BorderSide(
+                                  color: widget.habit.type == HabitType.negative 
+                                      ? const Color(0xFFEF4444) 
+                                      : const Color(0xFFFFD700),
                                   width: 2,
                                 ),
                               ),
                               focusedBorder: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(12),
-                                borderSide: const BorderSide(
-                                  color: Color(0xFFFFD700),
+                                borderSide: BorderSide(
+                                  color: widget.habit.type == HabitType.negative 
+                                      ? const Color(0xFFEF4444) 
+                                      : const Color(0xFFFFD700),
                                   width: 3,
                                 ),
                               ),
@@ -285,7 +295,9 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
                                 },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: _rating == i
-                                      ? const Color(0xFFFFD700)
+                                      ? (widget.habit.type == HabitType.negative 
+                                          ? const Color(0xFFEF4444) 
+                                          : const Color(0xFFFFD700))
                                       : Colors.grey[200],
                                   foregroundColor: _rating == i
                                       ? Colors.white
@@ -318,7 +330,9 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
                               style: ElevatedButton.styleFrom(
                                 backgroundColor:
                                     _rating == widget.habit.fullStars ~/ 2
-                                        ? const Color(0xFFFFD700)
+                                        ? (widget.habit.type == HabitType.negative 
+                                            ? const Color(0xFFEF4444) 
+                                            : const Color(0xFFFFD700))
                                         : Colors.grey[200],
                                 foregroundColor:
                                     _rating == widget.habit.fullStars ~/ 2
@@ -352,7 +366,9 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
                               style: ElevatedButton.styleFrom(
                                 backgroundColor:
                                     _rating == widget.habit.fullStars
-                                        ? const Color(0xFFFFD700)
+                                        ? (widget.habit.type == HabitType.negative 
+                                            ? const Color(0xFFEF4444) 
+                                            : const Color(0xFFFFD700))
                                         : Colors.grey[200],
                                 foregroundColor:
                                     _rating == widget.habit.fullStars

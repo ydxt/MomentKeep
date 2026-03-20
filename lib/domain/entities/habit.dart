@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:equatable/equatable.dart';
 import 'package:moment_keep/domain/entities/diary.dart';
 import 'package:moment_keep/domain/entities/check_in_record.dart';
@@ -7,6 +8,46 @@ enum HabitFrequency {
   daily,
   weekly,
   monthly,
+}
+
+/// 习惯类型枚举
+enum HabitType {
+  positive,
+  negative,
+}
+
+/// HabitType 扩展方法
+extension HabitTypeExtension on HabitType {
+  /// 获取显示名称
+  String get displayName {
+    switch (this) {
+      case HabitType.positive:
+        return '加分项';
+      case HabitType.negative:
+        return '减分项';
+    }
+  }
+  
+  /// 获取图标
+  IconData get icon {
+    switch (this) {
+      case HabitType.positive:
+        return Icons.add_circle;
+      case HabitType.negative:
+        return Icons.remove_circle;
+    }
+  }
+  
+  /// 获取颜色
+  Color getColor(BuildContext context) {
+    final theme = Theme.of(context);
+    switch (this) {
+      case HabitType.positive:
+        return theme.colorScheme.primary;
+      case HabitType.negative:
+        return theme.colorScheme.error;
+    }
+  }
 }
 
 /// 习惯实体
@@ -31,6 +72,7 @@ class Habit extends Equatable {
   final DateTime updatedAt;
   final int fullStars;
   final String notes;
+  final HabitType type;
 
   const Habit({
     required this.id,
@@ -53,6 +95,7 @@ class Habit extends Equatable {
     required this.updatedAt,
     this.fullStars = 5,
     this.notes = '',
+    this.type = HabitType.positive,
   });
 
   Habit copyWith({
@@ -76,6 +119,7 @@ class Habit extends Equatable {
     DateTime? updatedAt,
     int? fullStars,
     String? notes,
+    HabitType? type,
   }) {
     return Habit(
       id: id ?? this.id,
@@ -98,6 +142,7 @@ class Habit extends Equatable {
       updatedAt: updatedAt ?? this.updatedAt,
       fullStars: fullStars ?? this.fullStars,
       notes: notes ?? this.notes,
+      type: type ?? this.type,
     );
   }
 
@@ -119,6 +164,7 @@ class Habit extends Equatable {
         updatedAt,
         fullStars,
         notes,
+        type,
       ];
 
   /// 转换为JSON
@@ -145,7 +191,21 @@ class Habit extends Equatable {
       'updatedAt': updatedAt.toIso8601String(),
       'fullStars': fullStars,
       'notes': notes,
+      'type': type.toString().split('.').last,
     };
+  }
+
+  /// 解析习惯类型（向后兼容）
+  static HabitType _parseHabitType(dynamic value) {
+    if (value == null) return HabitType.positive;
+    try {
+      return HabitType.values.firstWhere(
+        (e) => e.toString().split('.').last == value,
+        orElse: () => HabitType.positive,
+      );
+    } catch (e) {
+      return HabitType.positive;
+    }
   }
 
   /// 从JSON创建Habit
@@ -182,6 +242,7 @@ class Habit extends Equatable {
       updatedAt: DateTime.parse(json['updatedAt']),
       fullStars: json['fullStars'],
       notes: json['notes'] ?? '',
+      type: _parseHabitType(json['type']),
     );
   }
 }

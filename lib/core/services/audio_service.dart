@@ -33,7 +33,7 @@ class AudioService {
   AudioService._internal() {
     // 确保Flutter绑定已初始化
     WidgetsFlutterBinding.ensureInitialized();
-    print('AudioService initialized');
+    debugPrint('AudioService initialized');
   }
 
   /// 工厂构造函数
@@ -43,96 +43,96 @@ class AudioService {
   Future<void> playSound(AudioType audioType) async {
     try {
       final String fileName = _audioPaths[audioType]!;
-      print('Attempting to play sound: $fileName');
+      debugPrint('Attempting to play sound: $fileName');
       
       // 直接使用文件名，因为音频文件在assets/audio目录中
       final assetSource = AssetSource('audio/$fileName');
-      print('AssetSource created: ${assetSource.path}');
+      debugPrint('AssetSource created: ${assetSource.path}');
       
       // 创建新的音频播放器实例
       final player = AudioPlayer();
       _audioPlayers.add(player);
-      print('Created new AudioPlayer instance, total players: ${_audioPlayers.length}');
+      debugPrint('Created new AudioPlayer instance, total players: ${_audioPlayers.length}');
       
       // 播放音频
       await player.play(assetSource);
-      print('Play called successfully');
+      debugPrint('Play called successfully');
 
-      print('Sound played successfully: $fileName');
+      debugPrint('Sound played successfully: $fileName');
     } catch (e) {
-      print('Error playing sound: $e');
+      debugPrint('Error playing sound: $e');
     }
   }
 
   /// 停止所有当前播放的音频
   Future<void> stopSound() async {
     try {
-      print('Attempting to stop all sounds, total players: ${_audioPlayers.length}');
+      debugPrint('Attempting to stop all sounds, total players: ${_audioPlayers.length}');
       
       // 停止并销毁所有播放器实例
       for (final player in _audioPlayers) {
         try {
           await player.stop();
           await player.dispose();
-          print('Player stopped and disposed');
+          debugPrint('Player stopped and disposed');
         } catch (e) {
-          print('Error stopping individual player: $e');
+          debugPrint('Error stopping individual player: $e');
         }
       }
       
       // 清空播放器列表
       _audioPlayers.clear();
-      print('All sounds stopped, players list cleared');
+      debugPrint('All sounds stopped, players list cleared');
     } catch (e) {
-      print('Error stopping sound: $e');
+      debugPrint('Error stopping sound: $e');
       // 即使出错，也要清空播放器列表
       _audioPlayers.clear();
-      print('Players list cleared after error');
+      debugPrint('Players list cleared after error');
     }
   }
 
   /// 暂停所有当前播放的音频
   Future<void> pauseSound() async {
     try {
-      print('Attempting to pause all sounds');
+      debugPrint('Attempting to pause all sounds');
       for (final player in _audioPlayers) {
         await player.pause();
       }
-      print('All sounds paused successfully');
+      debugPrint('All sounds paused successfully');
     } catch (e) {
-      print('Error pausing sound: $e');
+      debugPrint('Error pausing sound: $e');
     }
   }
 
   /// 恢复所有音频播放
   Future<void> resumeSound() async {
     try {
-      print('Attempting to resume all sounds');
+      debugPrint('Attempting to resume all sounds');
       for (final player in _audioPlayers) {
         await player.resume();
       }
-      print('All sounds resumed successfully');
+      debugPrint('All sounds resumed successfully');
     } catch (e) {
-      print('Error resuming sound: $e');
+      debugPrint('Error resuming sound: $e');
     }
   }
 
   /// 设置所有播放器的音量 (0.0 到 1.0)
   Future<void> setVolume(double volume) async {
     try {
-      print('Attempting to set volume to: $volume');
+      debugPrint('Attempting to set volume to: $volume');
       for (final player in _audioPlayers) {
         await player.setVolume(volume);
       }
-      print('Volume set to: $volume for all players');
+      debugPrint('Volume set to: $volume for all players');
     } catch (e) {
-      print('Error setting volume: $e');
+      debugPrint('Error setting volume: $e');
     }
   }
 
   /// 播放通知声音
   Future<void> playNotificationSound() async {
-    print('playNotificationSound called');
+    debugPrint('playNotificationSound called');
     await playSound(AudioType.notification);
   }
 
@@ -153,17 +153,17 @@ class AudioService {
 
   /// 播放随机音频
   Future<void> playRandomSound() async {
-    print('playRandomSound called');
+    debugPrint('playRandomSound called');
     final audioTypes = AudioType.values;
     final randomIndex = DateTime.now().millisecond % audioTypes.length;
     final randomAudioType = audioTypes[randomIndex];
-    print('Playing random sound: $randomAudioType');
+    debugPrint('Playing random sound: $randomAudioType');
     await playSound(randomAudioType);
   }
 
   /// 根据字符串类型播放指定音频
   Future<void> playSpecificSound(String audioType) async {
-    print('playSpecificSound called with: $audioType');
+    debugPrint('playSpecificSound called with: $audioType');
     
     // 音频类型到文件名的映射
     final Map<String, String> audioTypeToFileName = {
@@ -195,29 +195,29 @@ class AudioService {
     
     if (fileName != null) {
       try {
-        print('Attempting to play sound: $fileName');
+        debugPrint('Attempting to play sound: $fileName');
         
         // 直接使用文件名，因为音频文件在assets/audio目录中
         final assetSource = AssetSource('audio/$fileName');
-        print('AssetSource created: ${assetSource.path}');
+        debugPrint('AssetSource created: ${assetSource.path}');
         
         // 创建新的音频播放器实例
         final player = AudioPlayer();
         _audioPlayers.add(player);
-        print('Created new AudioPlayer instance, total players: ${_audioPlayers.length}');
+        debugPrint('Created new AudioPlayer instance, total players: ${_audioPlayers.length}');
         
         // 播放音频
         await player.play(assetSource);
-        print('Play called successfully');
+        debugPrint('Play called successfully');
 
-        print('Sound played successfully: $fileName');
+        debugPrint('Sound played successfully: $fileName');
       } catch (e) {
-        print('Error playing sound: $e');
+        debugPrint('Error playing sound: $e');
         // 如果播放失败，尝试播放默认音频
         await playNotificationSound();
       }
     } else {
-      print('Unknown audio type, playing default notification sound');
+      debugPrint('Unknown audio type, playing default notification sound');
       await playNotificationSound();
     }
   }
@@ -225,14 +225,14 @@ class AudioService {
   /// 释放所有资源
   Future<void> dispose() async {
     try {
-      print('Attempting to dispose all audio players');
+      debugPrint('Attempting to dispose all audio players');
       for (final player in _audioPlayers) {
         await player.dispose();
       }
       _audioPlayers.clear();
-      print('All audio players disposed successfully');
+      debugPrint('All audio players disposed successfully');
     } catch (e) {
-      print('Error disposing audio player: $e');
+      debugPrint('Error disposing audio player: $e');
     }
   }
 }

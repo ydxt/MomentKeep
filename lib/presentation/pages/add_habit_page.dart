@@ -79,6 +79,9 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
   
   /// 选中的图标
   late String _selectedIcon;
+  
+  /// 习惯类型
+  late HabitType _habitType;
 
   @override
   void initState() {
@@ -101,6 +104,7 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
       _selectedCategoryId = habit.categoryId;
       _cardColor = habit.color;
       _selectedIcon = _getValidIconValue(habit.icon);
+      _habitType = habit.type;
     } else {
       // 添加模式：使用默认值初始化
       _nameController = TextEditingController();
@@ -117,6 +121,7 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
       } else {
         _selectedIcon = Icons.fitness_center.codePoint.toString();
       }
+      _habitType = HabitType.positive;
     }
   }
 
@@ -272,6 +277,7 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
                 : null,
             fullStars: _fullStars,
             updatedAt: now,
+            type: _habitType,
           )
         : Habit(
             id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -302,6 +308,7 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
             updatedAt: now,
             fullStars: _fullStars,
             notes: '',
+            type: _habitType,
           );
     
     // 根据是否是编辑模式发送不同的事件
@@ -592,10 +599,21 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
                       const SizedBox(width: 12),
                       Row(
                         children: [
+                          if (_habitType == HabitType.negative)
+                            Text(
+                              '-',
+                              style: TextStyle(
+                                color: theme.colorScheme.error,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                           Text(
                             '$_fullStars',
                             style: TextStyle(
-                              color: theme.colorScheme.onBackground,
+                              color: _habitType == HabitType.negative 
+                                  ? theme.colorScheme.error 
+                                  : theme.colorScheme.onBackground,
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
                             ),
@@ -603,7 +621,9 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
                           const SizedBox(width: 4),
                           Icon(
                             Icons.star,
-                            color: theme.colorScheme.primary,
+                            color: _habitType == HabitType.negative 
+                                ? theme.colorScheme.error 
+                                : theme.colorScheme.primary,
                             size: 20,
                           ),
                         ],
@@ -614,6 +634,79 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
                           _fullStars++;
                         });
                       }, theme),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            
+            // 习惯类型选择
+            Container(
+              padding: const EdgeInsets.all(16.0),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceVariant,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: theme.colorScheme.outline,
+                  width: 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: theme.colorScheme.surfaceVariant,
+                        ),
+                        child: Center(
+                          child: Icon(
+                            _habitType == HabitType.positive 
+                                ? Icons.add_circle 
+                                : Icons.remove_circle,
+                            color: _habitType == HabitType.positive 
+                                ? theme.colorScheme.primary 
+                                : theme.colorScheme.error,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '习惯类型',
+                            style: TextStyle(
+                              color: theme.colorScheme.onBackground,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            _habitType == HabitType.positive
+                                ? '完成后获得积分'
+                                : '发生后扣除积分',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      _buildTypeButton(HabitType.positive, theme),
+                      const SizedBox(width: 12),
+                      _buildTypeButton(HabitType.negative, theme),
                     ],
                   ),
                 ],
@@ -1024,5 +1117,55 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
       // 如果图标解析失败，返回默认图标
       return Icons.fitness_center;
     }
+  }
+  
+  /// 构建类型选择按钮
+  Widget _buildTypeButton(HabitType type, ThemeData theme) {
+    final isSelected = _habitType == type;
+    final buttonColor = type == HabitType.positive 
+        ? theme.colorScheme.primary 
+        : theme.colorScheme.error;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            _habitType = type;
+          });
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: isSelected 
+                ? buttonColor.withOpacity(0.15)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isSelected 
+                  ? buttonColor
+                  : theme.colorScheme.outline,
+              width: 2,
+            ),
+          ),
+          child: Column(
+            children: [
+              Icon(
+                type == HabitType.positive ? Icons.add_circle : Icons.remove_circle,
+                color: buttonColor,
+                size: 24,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                type == HabitType.positive ? '加分项' : '减分项',
+                style: TextStyle(
+                  color: buttonColor,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

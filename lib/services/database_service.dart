@@ -2903,21 +2903,53 @@ class DatabaseService {
     return await UserDatabaseService().updateUser(userId, userData, null);
   }
 
-  /// 获取用户积分
+  /// 获取用户积分（直接从数据库读取，绕开可能的问题）
+  /// 获取用户积分（使用 UserDatabaseService 从正确的数据库读取）
   Future<double> getUserPoints(String userId) async {
     try {
-      final userData = await UserDatabaseService().getUserById(userId);
+      _log('从 UserDatabaseService 获取用户 $userId 的积分');
+
+      final userDbService = UserDatabaseService();
+      final userData = await userDbService.getUserById(userId);
+
       if (userData != null) {
-        if (userData['points'] is int) {
-          return (userData['points'] as int).toDouble();
-        } else if (userData['points'] is double) {
-          return userData['points'] as double;
+        // points 在 buyer_extension 里面
+        if (userData.containsKey('buyer_extension') &&
+            userData['buyer_extension'] != null) {
+          final buyerExtension = userData['buyer_extension'] as Map<String, dynamic>;
+          if (buyerExtension.containsKey('points')) {
+            final points = buyerExtension['points'];
+            _log('从 buyer_extension 读取到的积分值: $points, 类型: ${points.runtimeType}');
+
+            if (points is int) {
+              return points.toDouble();
+            } else if (points is double) {
+              return points;
+            } else if (points != null) {
+              return double.tryParse(points.toString()) ?? 0.0;
+            }
+          }
         }
-        return 0.0;
+
+        // 兼容其他可能在根级别的数据
+        if (userData.containsKey('points')) {
+          final points = userData['points'];
+          _log('从根级别读取到的积分值: $points, 类型: ${points.runtimeType}');
+
+          if (points is int) {
+            return points.toDouble();
+          } else if (points is double) {
+            return points;
+          } else if (points != null) {
+            return double.tryParse(points.toString()) ?? 0.0;
+          }
+        }
       }
+
+      _log('没有找到用户 $userId 的积分记录，返回0');
       return 0.0;
     } catch (e) {
-      debugPrint('获取用户积分失败: $e');
+      _log('获取用户积分失败: $e');
       return 0.0;
     }
   }
@@ -3238,6 +3270,46 @@ class DatabaseService {
     }
   }
 
+  /// 根据商家ID获取商品
+  Future<List<StarProduct>> getStarProductsByMerchantId(int merchantId) async {
+    try {
+      final productDb = ProductDatabaseService();
+      final productsResults = await productDb.getProductsByMerchantId(merchantId);
+
+      final List<StarProduct> products = [];
+      for (final productMap in productsResults) {
+        final product = StarProduct.fromMap(productMap);
+        products.add(product);
+      }
+
+      debugPrint('根据商家ID加载商品成功，共 ${products.length} 个商品');
+      return products;
+    } catch (e) {
+      debugPrint('根据商家ID获取商品失败: $e');
+      return [];
+    }
+  }
+
+  /// 获取所有已上架的商品（用户端浏览）
+  Future<List<StarProduct>> getActiveStarProducts() async {
+    try {
+      final productDb = ProductDatabaseService();
+      final productsResults = await productDb.getActiveProducts();
+
+      final List<StarProduct> products = [];
+      for (final productMap in productsResults) {
+        final product = StarProduct.fromMap(productMap);
+        products.add(product);
+      }
+
+      debugPrint('加载已上架商品成功，共 ${products.length} 个商品');
+      return products;
+    } catch (e) {
+      debugPrint('获取已上架商品失败: $e');
+      return [];
+    }
+  }
+
   /// 获取所有已删除的星星商店商品（回收站商品），包括SKU和规格
   Future<List<StarProduct>> getDeletedStarProducts() async {
     try {
@@ -3316,34 +3388,54 @@ class DatabaseService {
         orderBy: 'created_at DESC',
         limit: 1);
 
-    // 获取当前用户的积分
-    final userData = await UserDatabaseService().getUserById(userId);
-    final currentPoints = userData?['points'] ?? 0;
+    // 获取当前用户的积分 - 直接从buyer_extensions表读取，而不是从UserDatabaseService
+    final currentPoints = await getUserPoints(userId);
+    final currentPointsInt = currentPoints.round();
 
     if (maps.isNotEmpty) {
       final bill = Bill.fromMap(maps.first);
 
       // 检查账单余额是否与用户当前积分一致，如果不一致，就更新账单余额
-      if (bill.balance != currentPoints) {
-        // 计算收入和支出的差值
-        final diff = currentPoints - bill.balance;
-        final newIncome = diff > 0 ? bill.income + diff : bill.income;
-        final newExpense = diff < 0 ? bill.expense + (-diff) : bill.expense;
+      if (bill.balance != currentPointsInt) {
+        _log('账单余额不一致，需要更新。账单: ${bill.balance}, 实际积分: $currentPointsInt');
+        
+        // 重新计算正确的收入和支出，从bill_items表直接计算
+        final allBillItems = await db.query(
+          'bill_items',
+          where: 'user_id = ?',
+          whereArgs: [userId],
+        );
+        
+        int totalIncome = 0;
+        int totalExpense = 0;
+        
+        for (final item in allBillItems) {
+          final type = item['type'] as String?;
+          final amount = item['amount'] as num?;
+          
+          if (type == 'income' && amount != null) {
+            totalIncome += amount.toInt();
+          } else if (type == 'expense' && amount != null) {
+            totalExpense += amount.toInt();
+          }
+        }
+        
+        _log('重新计算 - 收入: $totalIncome, 支出: $totalExpense, 余额: $currentPointsInt');
 
         await updateBillBalance(
           bill.id,
-          currentPoints,
-          newIncome as int,
-          newExpense as int,
+          currentPointsInt,
+          totalIncome,
+          totalExpense,
         );
 
         // 返回更新后的账单
         return Bill(
           id: bill.id,
           userId: bill.userId,
-          balance: currentPoints,
-          income: newIncome as int,
-          expense: newExpense as int,
+          balance: currentPointsInt,
+          income: totalIncome,
+          expense: totalExpense,
           createdAt: bill.createdAt,
           updatedAt: DateTime.now(),
         );
@@ -3353,7 +3445,7 @@ class DatabaseService {
     }
 
     // 如果没有找到账单，自动创建一个初始账单
-    return await createBill(userId, initialBalance: currentPoints);
+    return await createBill(userId, initialBalance: currentPointsInt);
   }
 
   /// 创建新账单
@@ -3418,7 +3510,8 @@ class DatabaseService {
       {DateTime? startDate,
       DateTime? endDate,
       String? type,
-      String? transactionType}) async {
+      String? transactionType,
+      String? searchQuery}) async {
     final db = await database;
 
     List<String> whereConditions = ['user_id = ?'];
@@ -3442,6 +3535,12 @@ class DatabaseService {
     if (transactionType != null) {
       whereConditions.add('transaction_type = ?');
       whereArgs.add(transactionType);
+    }
+    
+    // 添加搜索条件
+    if (searchQuery != null && searchQuery.isNotEmpty) {
+      whereConditions.add('description LIKE ?');
+      whereArgs.add('%$searchQuery%');
     }
 
     final results = await db.query('bill_items',
@@ -3470,25 +3569,353 @@ class DatabaseService {
       whereArgs.add(endDate.millisecondsSinceEpoch);
     }
 
-    // 获取收入总和
-    final incomeResult = await db.rawQuery(
-        'SELECT SUM(amount) as total_income FROM bill_items WHERE type = ? AND ' +
-            whereConditions.join(' AND '),
-        ['income', ...whereArgs]);
-
-    // 获取支出总和
-    final expenseResult = await db.rawQuery(
-        'SELECT SUM(amount) as total_expense FROM bill_items WHERE type = ? AND ' +
-            whereConditions.join(' AND '),
-        ['expense', ...whereArgs]);
-
-    // 获取当前余额
-    final currentBill = await getCurrentBill(userId);
+    // 获取所有符合条件的记录，直接计算
+    final allItems = await db.query(
+      'bill_items',
+      where: whereConditions.join(' AND '),
+      whereArgs: whereArgs,
+    );
+    
+    int totalIncome = 0;
+    int totalExpense = 0;
+    
+    for (final item in allItems) {
+      final type = item['type'] as String?;
+      final amount = item['amount'] as num?;
+      
+      if (type == 'income' && amount != null) {
+        totalIncome += amount.toInt();
+      } else if (type == 'expense' && amount != null) {
+        totalExpense += amount.toInt();
+      }
+    }
+    
+    final balance = totalIncome - totalExpense;
+    
+    _log('账单统计 - 用户: $userId, 收入: $totalIncome, 支出: $totalExpense, 余额: $balance');
 
     return {
-      'total_income': incomeResult.first['total_income'] ?? 0,
-      'total_expense': expenseResult.first['total_expense'] ?? 0,
-      'balance': currentBill.balance
+      'total_income': totalIncome,
+      'total_expense': totalExpense,
+      'balance': balance
     };
+  }
+
+  /// 获取积分统计数据
+  Future<PointsStatistics> getPointsStatistics(String userId,
+      {DateTime? startDate, DateTime? endDate}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?'];
+    List<Object?> whereArgs = [userId];
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    // 获取所有符合条件的记录，直接计算
+    final allItems = await db.query(
+      'bill_items',
+      where: whereConditions.join(' AND '),
+      whereArgs: whereArgs,
+    );
+    
+    double totalIncome = 0.0;
+    double totalExpense = 0.0;
+    int transactionCount = allItems.length;
+    
+    for (final item in allItems) {
+      final type = item['type'] as String?;
+      final amount = item['amount'] as num?;
+      
+      if (type == 'income' && amount != null) {
+        totalIncome += amount.toDouble();
+      } else if (type == 'expense' && amount != null) {
+        totalExpense += amount.toDouble();
+      }
+    }
+    
+    _log('积分统计 - 用户: $userId, 收入: $totalIncome, 支出: $totalExpense, 交易数: $transactionCount');
+
+    final trendData = await getBillTrendData(userId, startDate: startDate, endDate: endDate);
+    
+    final typeDistribution = await getBillTypeDistribution(userId, startDate: startDate, endDate: endDate);
+    
+    final incomeTypeDistribution = await getBillTypeDistribution(
+      userId, 
+      startDate: startDate, 
+      endDate: endDate,
+      type: 'income',
+    );
+    
+    final expenseTypeDistribution = await getBillTypeDistribution(
+      userId, 
+      startDate: startDate, 
+      endDate: endDate,
+      type: 'expense',
+    );
+
+    return PointsStatistics(
+      totalIncome: totalIncome,
+      totalExpense: totalExpense,
+      netIncome: totalIncome - totalExpense,
+      transactionCount: transactionCount,
+      trendData: trendData,
+      typeDistribution: typeDistribution,
+      incomeTypeDistribution: incomeTypeDistribution,
+      expenseTypeDistribution: expenseTypeDistribution,
+    );
+  }
+
+  /// 获取账单趋势数据（按天分组）
+  Future<List<TrendDataPoint>> getBillTrendData(String userId,
+      {DateTime? startDate, DateTime? endDate}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?'];
+    List<Object?> whereArgs = [userId];
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    final results = await db.rawQuery('''
+      SELECT 
+        DATE(created_at / 1000, 'unixepoch') as date,
+        SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
+        SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
+      FROM bill_items
+      WHERE ${whereConditions.join(' AND ')}
+      GROUP BY DATE(created_at / 1000, 'unixepoch')
+      ORDER BY date ASC
+    ''', whereArgs);
+
+    return results.map<TrendDataPoint>((map) {
+      return TrendDataPoint(
+        date: DateTime.parse(map['date'] as String),
+        income: (map['income'] as num?)?.toDouble() ?? 0.0,
+        expense: (map['expense'] as num?)?.toDouble() ?? 0.0,
+      );
+    }).toList();
+  }
+
+  /// 获取账单交易类型分布
+  Future<Map<String, double>> getBillTypeDistribution(String userId,
+      {DateTime? startDate, DateTime? endDate, String? type}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?'];
+    List<Object?> whereArgs = [userId];
+
+    if (type != null) {
+      whereConditions.add('type = ?');
+      whereArgs.add(type);
+    }
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    final results = await db.rawQuery('''
+      SELECT 
+        transaction_type,
+        SUM(amount) as total
+      FROM bill_items
+      WHERE ${whereConditions.join(' AND ')}
+      GROUP BY transaction_type
+    ''', whereArgs);
+
+    final Map<String, double> distribution = {};
+    for (final row in results) {
+      final typeName = row['transaction_type'] as String?;
+      final total = (row['total'] as num?)?.toDouble() ?? 0.0;
+      if (typeName != null) {
+        distribution[typeName] = total;
+      }
+    }
+
+    return distribution;
+  }
+
+  /// 获取收入Top10的账单明细
+  Future<List<BillItem>> getTopIncomeBillItems(String userId,
+      {DateTime? startDate, DateTime? endDate, int limit = 10}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?', 'type = ?'];
+    List<Object?> whereArgs = [userId, 'income'];
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    final results = await db.query(
+      'bill_items',
+      where: whereConditions.join(' AND '),
+      whereArgs: whereArgs,
+      orderBy: 'amount DESC',
+      limit: limit,
+    );
+
+    return results.map<BillItem>((map) => BillItem.fromMap(map)).toList();
+  }
+
+  /// 获取支出Top10的账单明细
+  Future<List<BillItem>> getTopExpenseBillItems(String userId,
+      {DateTime? startDate, DateTime? endDate, int limit = 10}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?', 'type = ?'];
+    List<Object?> whereArgs = [userId, 'expense'];
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    final results = await db.query(
+      'bill_items',
+      where: whereConditions.join(' AND '),
+      whereArgs: whereArgs,
+      orderBy: 'amount DESC',
+      limit: limit,
+    );
+
+    return results.map<BillItem>((map) => BillItem.fromMap(map)).toList();
+  }
+
+  /// 直接更新用户积分到buyer_extensions表（使用 UserDatabaseService）
+  Future<void> updatePointsDirectly(String userId, int points) async {
+    try {
+      _log('尝试使用 UserDatabaseService 更新用户 $userId 的积分为: $points');
+      
+      final userDbService = UserDatabaseService();
+      
+      // 使用 updateUser 方法更新积分
+      await userDbService.updateUser(userId, {}, {'points': points});
+      
+      _log('使用 UserDatabaseService 更新积分成功');
+      
+      // 验证更新是否成功
+      final verifyPoints = await getUserPoints(userId);
+      _log('验证积分更新成功，数据库中的积分: $verifyPoints');
+      
+    } catch (e) {
+      _log('直接更新积分失败: $e');
+    }
+  }
+
+  /// 重新计算并修复用户积分
+  Future<void> recalculateAndFixPoints(String userId) async {
+    try {
+      final db = await database;
+      
+      _log('开始重新计算用户 $userId 的积分');
+      
+      // 先获取所有bill_items记录，直接计算
+      final allBillItems = await db.query(
+        'bill_items',
+        where: 'user_id = ?',
+        whereArgs: [userId],
+      );
+      
+      _log('找到 ${allBillItems.length} 条积分记录');
+      
+      int totalIncome = 0;
+      int totalExpense = 0;
+      
+      for (final item in allBillItems) {
+        final type = item['type'] as String?;
+        final amount = item['amount'] as num?;
+        final description = item['description'] as String?;
+        
+        _log('  记录: type=$type, amount=$amount, description=$description');
+        
+        if (type == 'income' && amount != null) {
+          totalIncome += amount.toInt();
+        } else if (type == 'expense' && amount != null) {
+          totalExpense += amount.toInt();
+        }
+      }
+      
+      final correctBalance = totalIncome - totalExpense;
+      
+      _log('用户 $userId 积分明细 - 总收入: $totalIncome, 总支出: $totalExpense, 正确余额: $correctBalance');
+      
+      // 直接更新积分，不通过UserDatabaseService
+      await updatePointsDirectly(userId, correctBalance);
+      
+      _log('用户 $userId 积分已修复，正确余额: $correctBalance');
+    } catch (e) {
+      _log('修复用户积分失败: $e');
+    }
+  }
+
+  /// 修复历史交易记录的transactionType
+  /// 将错误标记为habit_completed的记录修正为正确的类型
+  Future<void> fixHistoricalTransactionTypes(String userId) async {
+    try {
+      final db = await database;
+      
+      // 查询所有transaction_type为habit_completed的记录
+      final results = await db.query(
+        'bill_items',
+        where: 'user_id = ? AND transaction_type = ?',
+        whereArgs: [userId, 'habit_completed'],
+      );
+      
+      int fixedCount = 0;
+      
+      for (final record in results) {
+        final description = record['description'] as String? ?? '';
+        String newTransactionType = 'habit_completed';
+        
+        // 根据description判断正确的类型
+        if (description.contains('完成待办事项') || description.contains('取消完成待办事项')) {
+          newTransactionType = 'todo_completed';
+        } else if (description.contains('完成日记')) {
+          newTransactionType = 'diary_completed';
+        }
+        
+        // 如果需要修改，更新记录
+        if (newTransactionType != 'habit_completed') {
+          await db.update(
+            'bill_items',
+            {'transaction_type': newTransactionType},
+            where: 'id = ?',
+            whereArgs: [record['id']],
+          );
+          fixedCount++;
+        }
+      }
+      
+      _log('用户 $userId 历史交易记录修复完成，共修复 $fixedCount 条记录');
+    } catch (e) {
+      _log('修复历史交易记录失败: $e');
+    }
   }
 }

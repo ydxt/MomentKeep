@@ -260,6 +260,9 @@ class _HomePageState extends ConsumerState<HomePage> {
   /// 通知数量
   int _notificationCount = 0;
 
+  /// 当前底部导航索引
+  int _currentIndex = 0;
+
   @override
   void initState() {
     super.initState();
@@ -1646,12 +1649,14 @@ class _HomePageState extends ConsumerState<HomePage> {
           _buildNavItem(
             icon: Icons.dashboard,
             label: 'Home',
-            isActive: true,
+            isActive: _currentIndex == 0,
+            onTap: () => _onNavTap(0),
           ),
           _buildNavItem(
             icon: Icons.calendar_month,
             label: 'Plan',
-            isActive: false,
+            isActive: _currentIndex == 1,
+            onTap: () => _onNavTap(1),
           ),
           // Add Button
           Transform.translate(
@@ -1679,12 +1684,14 @@ class _HomePageState extends ConsumerState<HomePage> {
           _buildNavItem(
             icon: Icons.timer,
             label: 'Focus',
-            isActive: false,
+            isActive: _currentIndex == 2,
+            onTap: () => _onNavTap(2),
           ),
           _buildNavItem(
             icon: Icons.settings,
             label: 'Settings',
-            isActive: false,
+            isActive: _currentIndex == 3,
+            onTap: () => _onNavTap(3),
           ),
         ],
       ),
@@ -1696,25 +1703,63 @@ class _HomePageState extends ConsumerState<HomePage> {
     required IconData icon,
     required String label,
     required bool isActive,
+    VoidCallback? onTap,
   }) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(
-          icon,
-          color: isActive ? const Color(0xFF13ec5b) : Colors.grey,
-          size: 26,
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            icon,
             color: isActive ? const Color(0xFF13ec5b) : Colors.grey,
-            fontWeight: FontWeight.w500,
+            size: 26,
           ),
-        ),
-      ],
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              color: isActive ? const Color(0xFF13ec5b) : Colors.grey,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
     );
+  }
+
+  /// 底部导航点击事件
+  void _onNavTap(int index) {
+    setState(() {
+      _currentIndex = index;
+    });
+
+    switch (index) {
+      case 0:
+        // Home - 已经在首页，不需要跳转
+        break;
+      case 1:
+        // Plan - 跳转到待办事项页面
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const TodoPage()),
+        );
+        break;
+      case 2:
+        // Focus - 跳转到番茄钟页面
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const PomodoroPage()),
+        );
+        break;
+      case 3:
+        // Settings - 跳转到设置页面
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const NewSettingsPage()),
+        );
+        break;
+    }
   }
 }

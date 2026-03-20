@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:moment_keep/domain/entities/security.dart';
 import 'package:moment_keep/services/user_database_service.dart';
+import 'package:moment_keep/services/password_reset_service.dart';
 import 'package:moment_keep/core/utils/encryption_helper.dart';
 import 'package:moment_keep/core/utils/id_generator.dart';
 
@@ -108,6 +109,44 @@ class VerifyBiometric extends SecurityEvent {}
 /// 退出登录事件
 class LogoutEvent extends SecurityEvent {}
 
+/// 请求密码重置事件
+class RequestPasswordReset extends SecurityEvent {
+  final String email;
+
+  const RequestPasswordReset({
+    required this.email,
+  });
+
+  @override
+  List<Object?> get props => [email];
+}
+
+/// 验证密码重置令牌事件
+class VerifyResetToken extends SecurityEvent {
+  final String token;
+
+  const VerifyResetToken({
+    required this.token,
+  });
+
+  @override
+  List<Object?> get props => [token];
+}
+
+/// 完成密码重置事件
+class CompletePasswordReset extends SecurityEvent {
+  final String token;
+  final String newPassword;
+
+  const CompletePasswordReset({
+    required this.token,
+    required this.newPassword,
+  });
+
+  @override
+  List<Object?> get props => [token, newPassword];
+}
+
 /// 安全系统状态
 abstract class SecurityState extends Equatable {
   const SecurityState();
@@ -171,6 +210,22 @@ class BiometricVerificationFailed extends SecurityState {
   List<Object?> get props => [message];
 }
 
+/// 密码重置请求已发送状态
+class PasswordResetRequested extends SecurityState {
+  final String token;
+
+  const PasswordResetRequested(this.token);
+
+  @override
+  List<Object?> get props => [token];
+}
+
+/// 密码重置令牌验证成功状态
+class ResetTokenVerified extends SecurityState {}
+
+/// 密码重置完成状态
+class PasswordResetCompleted extends SecurityState {}
+
 /// 安全系统BLoC
 class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
   SecurityBloc() : super(SecurityInitial()) {
@@ -181,6 +236,9 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
     on<ToggleEndToEndEncryption>(_onToggleEndToEndEncryption);
     on<VerifyBiometric>(_onVerifyBiometric);
     on<LogoutEvent>(_onLogout);
+    on<RequestPasswordReset>(_onRequestPasswordReset);
+    on<VerifyResetToken>(_onVerifyResetToken);
+    on<CompletePasswordReset>(_onCompletePasswordReset);
   }
 
   /// 模拟用户认证信息
@@ -229,12 +287,8 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
           encryptionSettings: _mockEncryptionSettings,
         ));
       } else {
-        // 没有已登录用户，使用默认模拟用户
-        emit(SecurityLoaded(
-          userAuth: _mockUserAuth,
-          biometricSettings: _mockBiometricSettings,
-          encryptionSettings: _mockEncryptionSettings,
-        ));
+        // 没有已登录用户，发出初始状态
+        emit(SecurityInitial());
       }
     } catch (e) {
       emit(SecurityError('加载安全设置失败: $e'));
@@ -313,13 +367,18 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
   /// 生成密码哈希
   Future<String> _hashPassword(String password) async {
     // 使用EncryptionHelper进行密码加密
-    return await EncryptionHelper.encrypt(password);
+    debugPrint('加密密码 - 明文: $password');
+    final encrypted = await EncryptionHelper.encrypt(password);
+    debugPrint('加密结果: $encrypted');
+    return encrypted;
   }
 
   /// 验证密码
   Future<bool> _verifyPassword(String hashedPassword, String password) async {
     // 使用EncryptionHelper进行密码验证
+    debugPrint('验证密码 - 密文: $hashedPassword, 输入密码: $password');
     final decryptedPassword = await EncryptionHelper.decrypt(hashedPassword);
+    debugPrint('解密结果: $decryptedPassword, 匹配结果: ${decryptedPassword == password}');
     return decryptedPassword == password;
   }
 
@@ -354,11 +413,44 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
     final userData = await UserDatabaseService().getUserById(userId);
 
     if (userData != null) {
-      // 根据用户类型获取不同的扩展信息
-      final isAdmin = userData['user_type'] == 2;
-      final nickname = userData['nickname'] ?? username;
-      final avatar = userData['avatar']?.toString();
-      final userEmail = userData['email']?.toString() ?? email;
+      // 根据用户类型获取不同的扩展信息（支持位掩码）
+      final userType = userData['user_type'] as int;
+      final isAdmin = (userType & 4) != 0; // 0b100 = 4
+      
+      // 优先从扩展信息中获取昵称、邮箱、头像
+      String nickname = username;
+      String userEmail = email;
+      String? avatar = userData['avatar']?.toString();
+      
+      // 检查是否有买家扩展信息
+      if (userData.containsKey('buyer_extension') && userData['buyer_extension'] != null) {
+        nickname = userData['buyer_extension']['nickname']?.toString() ?? nickname;
+        userEmail = userData['buyer_extension']['email']?.toString() ?? userEmail;
+        if (avatar == null) {
+          avatar = userData['buyer_extension']['avatar']?.toString();
+        }
+      }
+      // 检查是否有商家扩展信息
+      else if (userData.containsKey('seller_extension') && userData['seller_extension'] != null) {
+        nickname = userData['seller_extension']['nickname']?.toString() ?? nickname;
+        userEmail = userData['seller_extension']['email']?.toString() ?? userEmail;
+        if (avatar == null) {
+          avatar = userData['seller_extension']['avatar']?.toString();
+        }
+      }
+      // 检查是否有管理员扩展信息
+      else if (userData.containsKey('admin_extension') && userData['admin_extension'] != null) {
+        nickname = userData['admin_extension']['nickname']?.toString() ?? nickname;
+        userEmail = userData['admin_extension']['email']?.toString() ?? userEmail;
+        if (avatar == null) {
+          avatar = userData['admin_extension']['avatar']?.toString();
+        }
+      }
+      // 最后尝试从根级别获取（向后兼容）
+      else {
+        nickname = userData['nickname']?.toString() ?? nickname;
+        userEmail = userData['email']?.toString() ?? userEmail;
+      }
       
       debugPrint('从数据库获取的用户头像: $avatar');
 
@@ -442,43 +534,47 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
       
       // 如果网络登录失败或在Windows平台，使用UserDatabaseService登录
       if (!networkLoginSuccess) {
+        debugPrint('开始本地登录 - 邮箱: ${event.email}, 密码: ${event.password}');
         // 使用UserDatabaseService查询用户
         final userDatabase = UserDatabaseService();
         
-        // 由于user_database_service.dart没有提供通过邮箱查询用户的方法，我们需要先获取所有用户，然后在内存中筛选
-        final allUsers = await userDatabase.getAllUsers();
-        final userList = allUsers;
-        
-        // 查找匹配的用户 - 先获取所有用户的完整信息
-        List<Map<String, dynamic>> matchingUsers = [];
-        for (var user in userList) {
-          final fullUser = await userDatabase.getUserById(user['user_id'].toString());
-          if (fullUser != null && fullUser['email'] == event.email) {
-            matchingUsers.add(user);
-          }
-        }
-
-        if (matchingUsers.isEmpty) {
-          emit(const SecurityError('用户不存在'));
-          return;
-        }
-
-        // 获取完整的用户信息
-        final userData = await userDatabase.getUserById(matchingUsers[0]['user_id'].toString());
+        // 使用getUserByEmail直接查找用户
+        final userData = await userDatabase.getUserByEmail(event.email);
+        debugPrint('查询到的用户数据: $userData');
         if (userData == null) {
           emit(const SecurityError('用户不存在'));
           return;
         }
 
-        // 验证密码
-        final storedPasswordHash = userData['password_hash'] as String;
-        bool isPasswordValid = await _verifyPassword(storedPasswordHash, event.password);
+        // 验证密码 - 优先从扩展信息中获取，兼容多重身份
+        String storedPasswordHash = '';
         
-        // 为test@h.com邮箱添加特殊处理，允许使用12345678密码登录
-        if (event.email == 'test@h.com' && event.password == '12345678') {
-          isPasswordValid = true;
+        // 检查是否有买家扩展信息
+        if (userData.containsKey('buyer_extension') && userData['buyer_extension'] != null) {
+          storedPasswordHash = userData['buyer_extension']['password_hash']?.toString() ?? '';
         }
-
+        // 检查是否有商家扩展信息
+        else if (userData.containsKey('seller_extension') && userData['seller_extension'] != null) {
+          storedPasswordHash = userData['seller_extension']['password_hash']?.toString() ?? '';
+        }
+        // 检查是否有管理员扩展信息
+        else if (userData.containsKey('admin_extension') && userData['admin_extension'] != null) {
+          storedPasswordHash = userData['admin_extension']['password_hash']?.toString() ?? '';
+        }
+        // 最后尝试从根级别获取（向后兼容）
+        else {
+          storedPasswordHash = userData['password_hash']?.toString() ?? '';
+        }
+        
+        debugPrint('从用户数据中获取的密码哈希: $storedPasswordHash');
+        bool isPasswordValid = false;
+        
+        // 先正常验证密码
+        if (storedPasswordHash.isNotEmpty) {
+          isPasswordValid = await _verifyPassword(storedPasswordHash, event.password);
+        }
+        
+        debugPrint('密码验证结果: $isPasswordValid');
         if (!isPasswordValid) {
           emit(const SecurityError('密码错误'));
           return;
@@ -486,26 +582,67 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
 
         // 更新用户最后登录时间
         final now = DateTime.now();
+        final userId = userData['user_id']?.toString() ?? '';
+        if (userId.isEmpty) {
+          emit(const SecurityError('用户ID无效'));
+          return;
+        }
         await userDatabase.updateUser(
-          userData['user_id'].toString(),
+          userId,
           {'last_login_time': now.toIso8601String(), 'update_time': now.toIso8601String()},
           null,
         );
 
-        // 创建UserAuth对象
-        final isAdmin = userData['user_type'] == 2;
-        final nickname = userData['nickname'] ?? userData['user_id'];
-        final avatar = userData['avatar']?.toString();
+        // 创建UserAuth对象（支持位掩码）
+        final userType = userData['user_type'] as int? ?? 0;
+        final isAdmin = (userType & 4) != 0; // 0b100 = 4
+        
+        // 优先从扩展信息中获取昵称、邮箱、头像
+        String nickname = userData['user_id']?.toString() ?? '用户';
+        String email = '';
+        String? avatar = userData['avatar']?.toString();
+        
+        // 检查是否有买家扩展信息
+        if (userData.containsKey('buyer_extension') && userData['buyer_extension'] != null) {
+          nickname = userData['buyer_extension']['nickname']?.toString() ?? nickname;
+          email = userData['buyer_extension']['email']?.toString() ?? email;
+          if (avatar == null) {
+            avatar = userData['buyer_extension']['avatar']?.toString();
+          }
+        }
+        // 检查是否有商家扩展信息
+        else if (userData.containsKey('seller_extension') && userData['seller_extension'] != null) {
+          nickname = userData['seller_extension']['nickname']?.toString() ?? nickname;
+          email = userData['seller_extension']['email']?.toString() ?? email;
+          if (avatar == null) {
+            avatar = userData['seller_extension']['avatar']?.toString();
+          }
+        }
+        // 检查是否有管理员扩展信息
+        else if (userData.containsKey('admin_extension') && userData['admin_extension'] != null) {
+          nickname = userData['admin_extension']['nickname']?.toString() ?? nickname;
+          email = userData['admin_extension']['email']?.toString() ?? email;
+          if (avatar == null) {
+            avatar = userData['admin_extension']['avatar']?.toString();
+          }
+        }
+        // 最后尝试从根级别获取（向后兼容）
+        else {
+          nickname = userData['nickname']?.toString() ?? nickname;
+          email = userData['email']?.toString() ?? email;
+        }
+        
+        final createTimeStr = userData['create_time']?.toString() ?? now.toIso8601String();
 
         final userAuth = UserAuth(
-          id: userData['user_id'].toString(),
-          username: nickname.toString(),
-          email: userData['email'].toString(),
+          id: userId,
+          username: nickname,
+          email: email,
           avatar: avatar,
           isBiometricEnabled: false,
           isAdmin: isAdmin,
           lastLoginAt: now,
-          createdAt: DateTime.parse(userData['create_time'].toString()),
+          createdAt: DateTime.parse(createTimeStr),
           updatedAt: now,
         );
 
@@ -558,6 +695,13 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
         // 使用UserDatabaseService注册用户
         final userDatabase = UserDatabaseService();
 
+        // 先检查邮箱是否已存在
+        final existingUser = await userDatabase.getUserByEmail(event.email);
+        if (existingUser != null) {
+          emit(const SecurityError('该邮箱已被注册，请使用其他邮箱或直接登录'));
+          return;
+        }
+
         // 生成密码哈希
         final passwordHash = await _hashPassword(event.password);
 
@@ -581,21 +725,19 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
         };
 
         // 准备用户扩展数据
-        final extensionData = {
+        final extensionData = <String, dynamic>{
           'nickname': event.username,
-          'avatar': avatarPath,
           'gender': 0,
-          'birthday': null,
-          'phone': null,
           'email': event.email,
           'password_hash': passwordHash,
-          'secret_question': null,
-          'default_address_id': null,
           'member_level': 0,
           'points': 0,
-          'id_card_encrypt': null,
-          'privacy_setting': null,
         };
+        
+        // 只添加非null的值
+        if (avatarPath != null) {
+          extensionData['avatar'] = avatarPath;
+        }
 
         // 插入用户到数据库
         await userDatabase.insertUser(userData, extensionData);
@@ -646,6 +788,166 @@ class SecurityBloc extends Bloc<SecurityEvent, SecurityState> {
       emit(SecurityInitial());
     } catch (e) {
       emit(SecurityError('退出登录失败: $e'));
+    }
+  }
+
+  /// 处理请求密码重置事件
+  FutureOr<void> _onRequestPasswordReset(
+      RequestPasswordReset event, Emitter<SecurityState> emit) async {
+    emit(SecurityLoading());
+    try {
+      // 尝试使用网络API请求密码重置
+      bool networkRequestSuccess = false;
+      
+      // 仅在非Windows桌面平台尝试网络请求
+      if (!Platform.isWindows) {
+        try {
+          // 调用服务端密码重置请求API
+          final response = await _NetworkService.post('auth/request-reset', body: {
+            'email': event.email,
+          });
+
+          if (response.statusCode == 200) {
+            // 网络请求成功，从响应中获取令牌
+            final data = jsonDecode(response.body);
+            final token = data['token'] as String;
+            emit(PasswordResetRequested(token));
+            networkRequestSuccess = true;
+            return;
+          }
+        } catch (networkError) {
+          // 网络请求失败，降级到本地处理
+          debugPrint('网络请求密码重置失败，使用本地处理: $networkError');
+        }
+      }
+      
+      // 如果网络请求失败或在Windows平台，使用本地服务
+      if (!networkRequestSuccess) {
+        final userDatabase = UserDatabaseService();
+        final passwordResetService = PasswordResetService();
+        
+        // 通过邮箱查找用户
+        final userData = await userDatabase.getUserByEmail(event.email);
+        if (userData == null) {
+          emit(const SecurityError('用户不存在'));
+          return;
+        }
+        
+        // 创建密码重置令牌
+        final resetToken = await passwordResetService.createResetToken(
+          userData['user_id'].toString(),
+          event.email,
+        );
+        
+        emit(PasswordResetRequested(resetToken.token));
+      }
+    } catch (e) {
+      emit(SecurityError('请求密码重置失败: $e'));
+    }
+  }
+
+  /// 处理验证密码重置令牌事件
+  FutureOr<void> _onVerifyResetToken(
+      VerifyResetToken event, Emitter<SecurityState> emit) async {
+    emit(SecurityLoading());
+    try {
+      // 尝试使用网络API验证令牌
+      bool networkVerifySuccess = false;
+      
+      // 仅在非Windows桌面平台尝试网络验证
+      if (!Platform.isWindows) {
+        try {
+          // 调用服务端令牌验证API
+          final response = await _NetworkService.post('auth/verify-reset-token', body: {
+            'token': event.token,
+          });
+
+          if (response.statusCode == 200) {
+            emit(ResetTokenVerified());
+            networkVerifySuccess = true;
+            return;
+          }
+        } catch (networkError) {
+          // 网络验证失败，降级到本地处理
+          debugPrint('网络验证令牌失败，使用本地处理: $networkError');
+        }
+      }
+      
+      // 如果网络验证失败或在Windows平台，使用本地服务
+      if (!networkVerifySuccess) {
+        final passwordResetService = PasswordResetService();
+        
+        // 验证令牌
+        final resetToken = await passwordResetService.verifyToken(event.token);
+        if (resetToken == null) {
+          emit(const SecurityError('令牌无效或已过期'));
+          return;
+        }
+        
+        emit(ResetTokenVerified());
+      }
+    } catch (e) {
+      emit(SecurityError('验证令牌失败: $e'));
+    }
+  }
+
+  /// 处理完成密码重置事件
+  FutureOr<void> _onCompletePasswordReset(
+      CompletePasswordReset event, Emitter<SecurityState> emit) async {
+    emit(SecurityLoading());
+    try {
+      // 尝试使用网络API完成密码重置
+      bool networkResetSuccess = false;
+      
+      // 仅在非Windows桌面平台尝试网络重置
+      if (!Platform.isWindows) {
+        try {
+          // 调用服务端完成密码重置API
+          final response = await _NetworkService.post('auth/complete-reset', body: {
+            'token': event.token,
+            'new_password': event.newPassword,
+          });
+
+          if (response.statusCode == 200) {
+            emit(PasswordResetCompleted());
+            networkResetSuccess = true;
+            return;
+          }
+        } catch (networkError) {
+          // 网络重置失败，降级到本地处理
+          debugPrint('网络完成密码重置失败，使用本地处理: $networkError');
+        }
+      }
+      
+      // 如果网络重置失败或在Windows平台，使用本地服务
+      if (!networkResetSuccess) {
+        final userDatabase = UserDatabaseService();
+        final passwordResetService = PasswordResetService();
+        
+        // 验证令牌
+        final resetToken = await passwordResetService.verifyToken(event.token);
+        if (resetToken == null) {
+          emit(const SecurityError('令牌无效或已过期'));
+          return;
+        }
+        
+        // 生成新的密码哈希
+        final passwordHash = await _hashPassword(event.newPassword);
+        
+        // 更新用户密码
+        await userDatabase.updateUser(
+          resetToken.userId,
+          {'update_time': DateTime.now().toIso8601String()},
+          {'password_hash': passwordHash},
+        );
+        
+        // 标记令牌为已使用
+        await passwordResetService.markTokenAsUsed(event.token);
+        
+        emit(PasswordResetCompleted());
+      }
+    } catch (e) {
+      emit(SecurityError('完成密码重置失败: $e'));
     }
   }
 }

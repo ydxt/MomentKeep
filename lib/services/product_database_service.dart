@@ -9,6 +9,8 @@ import 'package:sqflite/sqflite.dart' as sqflite_package;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart'
     if (dart.library.html) 'package:moment_keep/services/empty_sqflite_ffi.dart';
 import 'package:moment_keep/services/user_database_service.dart';
+import 'package:moment_keep/services/storage_path_service.dart';
+import 'package:moment_keep/domain/entities/star_exchange.dart';
 
 // 定义动态类型别名以适配不同环境
 typedef DatabaseType = dynamic;
@@ -45,7 +47,7 @@ class ProductDatabaseService {
   static const String _databaseName = 'moment_keep_products.db';
 
   /// 数据库版本
-  static const int _databaseVersion = 8;
+  static const int _databaseVersion = 9;
 
   /// 打印数据库版本信息
   void _logDatabaseInfo() {
@@ -311,6 +313,44 @@ class ProductDatabaseService {
       _log(
           'Error checking or adding payment columns to star_product_skus table: $e');
     }
+
+    // 检查并添加star_products表的merchant_id列
+    try {
+      final starProductsColumns =
+          await db.rawQuery("PRAGMA table_info(star_products)");
+      final columnsMap = <String, bool>{};
+      for (var column in starProductsColumns) {
+        columnsMap[column['name'] as String] = true;
+      }
+
+      if (!columnsMap.containsKey('merchant_id')) {
+        await db.execute(
+            'ALTER TABLE star_products ADD COLUMN merchant_id INTEGER REFERENCES merchants(id) ON DELETE SET NULL');
+        _log('Added missing merchant_id column to star_products table');
+      }
+    } catch (e) {
+      _log(
+          'Error checking or adding merchant_id column to star_products table: $e');
+    }
+
+    // 检查并添加orders表的merchant_id列
+    try {
+      final ordersColumns =
+          await db.rawQuery("PRAGMA table_info(orders)");
+      final columnsMap = <String, bool>{};
+      for (var column in ordersColumns) {
+        columnsMap[column['name'] as String] = true;
+      }
+
+      if (!columnsMap.containsKey('merchant_id')) {
+        await db.execute(
+            'ALTER TABLE orders ADD COLUMN merchant_id INTEGER REFERENCES merchants(id) ON DELETE SET NULL');
+        _log('Added missing merchant_id column to orders table');
+      }
+    } catch (e) {
+      _log(
+          'Error checking or adding merchant_id column to orders table: $e');
+    }
   }
 
   /// 等待数据库完全初始化完成
@@ -337,11 +377,11 @@ class ProductDatabaseService {
       // 直接从SharedPreferences获取当前用户ID，避免循环依赖
       final prefs = await SharedPreferences.getInstance();
 
-      // 所有用户都使用default目录下的数据库文件
-      // 直接使用_getDefaultDirectory()方法获取default目录，确保所有数据库连接都使用相同的目录
-      final directory = await _getDefaultDirectory();
+      // 所有用户都使用cloud目录下的数据库文件
+      // 使用服务器目录确保数据存放在cloud/database目录
+      final directory = await _getServerDirectory();
       if (directory == null) {
-        throw Exception('Unable to access default directory');
+        throw Exception('Unable to access server directory');
       }
 
       final path = path_package.join(directory.path, _databaseName);
@@ -442,6 +482,39 @@ class ProductDatabaseService {
     }
   }
 
+  /// 获取服务器目录（cloud/database/目录）
+  /// 用于存放商品数据库等核心业务数据
+  Future<Directory?> _getServerDirectory() async {
+    try {
+      // 从SharedPreferences获取自定义存储路径
+      final prefs = await SharedPreferences.getInstance();
+      final customPath = prefs.getString('storage_path');
+
+      Directory serverDir;
+
+      if (customPath != null && customPath.isNotEmpty) {
+        // 使用自定义存储路径下的cloud/database目录
+        serverDir = Directory('$customPath/cloud/database');
+      } else {
+        // 使用StoragePathService获取服务器数据库目录
+        final serverDatabasePath = await StoragePathService.getServerDatabaseDirectory();
+        serverDir = Directory(serverDatabasePath);
+      }
+
+      // 确保存储目录存在
+      if (!await serverDir.exists()) {
+        await serverDir.create(recursive: true);
+        _log('创建服务器目录: ${serverDir.path}');
+      }
+
+      _log('使用服务器目录: ${serverDir.path}');
+      return serverDir;
+    } catch (e) {
+      _log('Error getting server directory: $e');
+      return null;
+    }
+  }
+
   /// 创建数据库表结构
   Future<void> _onCreate(dynamic db, int version) async {
     _log('Creating product database tables, version: $version');
@@ -472,6 +545,7 @@ class ProductDatabaseService {
         cost_price INTEGER NOT NULL DEFAULT 0,
         stock INTEGER NOT NULL,
         category_id INTEGER NOT NULL,
+        merchant_id INTEGER,
         brand TEXT,
         tags TEXT,
         category_path TEXT,
@@ -518,7 +592,8 @@ class ProductDatabaseService {
         -- 混合支付相关字段
         hybrid_price INTEGER DEFAULT 0,
         hybrid_points INTEGER DEFAULT 0,
-        FOREIGN KEY (category_id) REFERENCES star_categories(id) ON DELETE CASCADE
+        FOREIGN KEY (category_id) REFERENCES star_categories(id) ON DELETE CASCADE,
+        FOREIGN KEY (merchant_id) REFERENCES merchants(id) ON DELETE SET NULL
       );
     ''');
     _log('Created star_products table');
@@ -571,6 +646,7 @@ class ProductDatabaseService {
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
         product_id INTEGER NOT NULL,
+        merchant_id INTEGER,
         product_name TEXT NOT NULL,
         product_image TEXT NOT NULL,
         points INTEGER NOT NULL,
@@ -591,7 +667,8 @@ class ProductDatabaseService {
         buyer_phone TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        FOREIGN KEY (product_id) REFERENCES star_products(id) ON DELETE CASCADE
+        FOREIGN KEY (product_id) REFERENCES star_products(id) ON DELETE CASCADE,
+        FOREIGN KEY (merchant_id) REFERENCES merchants(id) ON DELETE SET NULL
       );
     ''');
     _log('Created orders table');
@@ -728,6 +805,296 @@ class ProductDatabaseService {
         'CREATE INDEX IF NOT EXISTS idx_operation_logs_order_id ON operation_logs (order_id)');
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_operation_logs_created_at ON operation_logs (created_at)');
+
+    // 创建优惠券表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS coupons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        code TEXT NOT NULL,
+        type TEXT NOT NULL,
+        value INTEGER,
+        min_amount INTEGER,
+        max_discount INTEGER,
+        total_count INTEGER NOT NULL,
+        used_count INTEGER NOT NULL DEFAULT 0,
+        start_time INTEGER,
+        end_time INTEGER,
+        valid_days INTEGER,
+        category_ids TEXT,
+        product_ids TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created coupons table');
+
+    // 创建用户优惠券表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS user_coupons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        coupon_id INTEGER NOT NULL,
+        order_id TEXT,
+        used_at INTEGER,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        status TEXT NOT NULL DEFAULT 'unused',
+        FOREIGN KEY (coupon_id) REFERENCES coupons(id) ON DELETE CASCADE
+      );
+    ''');
+    _log('Created user_coupons table');
+
+    // 创建红包表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS red_packets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        total_amount INTEGER NOT NULL,
+        total_count INTEGER NOT NULL,
+        received_count INTEGER NOT NULL DEFAULT 0,
+        min_amount INTEGER,
+        max_amount INTEGER,
+        start_time INTEGER,
+        end_time INTEGER,
+        description TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created red_packets table');
+
+    // 创建红包领取记录表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS red_packet_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        red_packet_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        claimed_at INTEGER NOT NULL,
+        FOREIGN KEY (red_packet_id) REFERENCES red_packets(id) ON DELETE CASCADE
+      );
+    ''');
+    _log('Created red_packet_claims table');
+
+    // 创建购物卡表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS shopping_cards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        card_no TEXT NOT NULL,
+        name TEXT NOT NULL,
+        total_amount INTEGER NOT NULL,
+        balance INTEGER NOT NULL,
+        password TEXT,
+        valid_from INTEGER,
+        valid_to INTEGER,
+        status TEXT NOT NULL DEFAULT 'inactive',
+        activated_at INTEGER,
+        user_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created shopping_cards table');
+
+    // 创建购物卡交易记录表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS shopping_card_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shopping_card_id INTEGER NOT NULL,
+        order_id TEXT,
+        amount INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        balance_before INTEGER NOT NULL,
+        balance_after INTEGER NOT NULL,
+        description TEXT,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (shopping_card_id) REFERENCES shopping_cards(id) ON DELETE CASCADE
+      );
+    ''');
+    _log('Created shopping_card_transactions table');
+
+    // 创建地址表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS addresses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        province TEXT NOT NULL,
+        city TEXT NOT NULL,
+        district TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        postal_code TEXT,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        tag TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created addresses table');
+
+    // 创建会员等级表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS member_levels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        min_points INTEGER NOT NULL,
+        discount REAL NOT NULL DEFAULT 1.0,
+        points_bonus INTEGER NOT NULL DEFAULT 0,
+        icon TEXT,
+        privileges TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created member_levels table');
+
+    // 创建物流公司表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS logistics_companies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        code TEXT NOT NULL,
+        website TEXT,
+        phone TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created logistics_companies table');
+
+    // 创建物流跟踪记录表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS logistics_tracks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL,
+        logistics_company_id INTEGER,
+        tracking_number TEXT,
+        status TEXT NOT NULL,
+        description TEXT NOT NULL,
+        location TEXT,
+        track_time INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (logistics_company_id) REFERENCES logistics_companies(id) ON DELETE SET NULL
+      );
+    ''');
+    _log('Created logistics_tracks table');
+
+    // 创建支付记录表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS payment_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        payment_no TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        points_used INTEGER NOT NULL DEFAULT 0,
+        cash_amount INTEGER NOT NULL DEFAULT 0,
+        payment_method TEXT NOT NULL,
+        third_party_payment_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        paid_at INTEGER,
+        failure_reason TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created payment_records table');
+
+    // 创建库存变动记录表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS stock_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        sku_id INTEGER,
+        type TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        stock_before INTEGER NOT NULL,
+        stock_after INTEGER NOT NULL,
+        related_id TEXT,
+        remark TEXT,
+        operator_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (product_id) REFERENCES star_products(id) ON DELETE CASCADE
+      );
+    ''');
+    _log('Created stock_records table');
+
+    // 创建商家表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS merchants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        logo TEXT,
+        description TEXT,
+        phone TEXT,
+        email TEXT,
+        address TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        rating REAL NOT NULL DEFAULT 0.0,
+        total_sales INTEGER NOT NULL DEFAULT 0,
+        approved_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created merchants table');
+
+    // 创建新表的索引
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_coupons_code ON coupons (code)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_user_coupons_user_id ON user_coupons (user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_user_coupons_coupon_id ON user_coupons (coupon_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_user_coupons_status ON user_coupons (status)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_red_packet_claims_red_packet_id ON red_packet_claims (red_packet_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_red_packet_claims_user_id ON red_packet_claims (user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_shopping_cards_card_no ON shopping_cards (card_no)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_shopping_cards_user_id ON shopping_cards (user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_shopping_card_transactions_shopping_card_id ON shopping_card_transactions (shopping_card_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_shopping_card_transactions_order_id ON shopping_card_transactions (order_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_addresses_user_id ON addresses (user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_addresses_is_default ON addresses (is_default)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_member_levels_min_points ON member_levels (min_points)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_logistics_companies_code ON logistics_companies (code)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_logistics_tracks_order_id ON logistics_tracks (order_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_logistics_tracks_tracking_number ON logistics_tracks (tracking_number)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_payment_records_order_id ON payment_records (order_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_payment_records_user_id ON payment_records (user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_payment_records_payment_no ON payment_records (payment_no)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_stock_records_product_id ON stock_records (product_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_stock_records_sku_id ON stock_records (sku_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_merchants_user_id ON merchants (user_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_merchants_status ON merchants (status)');
 
     _log('Product database tables created successfully');
   }
@@ -1064,6 +1431,300 @@ class ProductDatabaseService {
         _log('original_cash column might already exist: $e');
       }
     }
+
+    // 升级版本8到9：添加所有新表
+    if (oldVersion < 9) {
+      // 创建优惠券表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS coupons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          code TEXT NOT NULL,
+          type TEXT NOT NULL,
+          value INTEGER,
+          min_amount INTEGER,
+          max_discount INTEGER,
+          total_count INTEGER NOT NULL,
+          used_count INTEGER NOT NULL DEFAULT 0,
+          start_time INTEGER,
+          end_time INTEGER,
+          valid_days INTEGER,
+          category_ids TEXT,
+          product_ids TEXT,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      _log('Created coupons table in upgrade');
+
+      // 创建用户优惠券表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS user_coupons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          coupon_id INTEGER NOT NULL,
+          order_id TEXT,
+          used_at INTEGER,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          status TEXT NOT NULL DEFAULT 'unused',
+          FOREIGN KEY (coupon_id) REFERENCES coupons(id) ON DELETE CASCADE
+        );
+      ''');
+      _log('Created user_coupons table in upgrade');
+
+      // 创建红包表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS red_packets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          type TEXT NOT NULL,
+          total_amount INTEGER NOT NULL,
+          total_count INTEGER NOT NULL,
+          received_count INTEGER NOT NULL DEFAULT 0,
+          min_amount INTEGER,
+          max_amount INTEGER,
+          start_time INTEGER,
+          end_time INTEGER,
+          description TEXT,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      _log('Created red_packets table in upgrade');
+
+      // 创建红包领取记录表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS red_packet_claims (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          red_packet_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          amount INTEGER NOT NULL,
+          claimed_at INTEGER NOT NULL,
+          FOREIGN KEY (red_packet_id) REFERENCES red_packets(id) ON DELETE CASCADE
+        );
+      ''');
+      _log('Created red_packet_claims table in upgrade');
+
+      // 创建购物卡表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS shopping_cards (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          card_no TEXT NOT NULL,
+          name TEXT NOT NULL,
+          total_amount INTEGER NOT NULL,
+          balance INTEGER NOT NULL,
+          password TEXT,
+          valid_from INTEGER,
+          valid_to INTEGER,
+          status TEXT NOT NULL DEFAULT 'inactive',
+          activated_at INTEGER,
+          user_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      _log('Created shopping_cards table in upgrade');
+
+      // 创建购物卡交易记录表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS shopping_card_transactions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          shopping_card_id INTEGER NOT NULL,
+          order_id TEXT,
+          amount INTEGER NOT NULL,
+          type TEXT NOT NULL,
+          balance_before INTEGER NOT NULL,
+          balance_after INTEGER NOT NULL,
+          description TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (shopping_card_id) REFERENCES shopping_cards(id) ON DELETE CASCADE
+        );
+      ''');
+      _log('Created shopping_card_transactions table in upgrade');
+
+      // 创建地址表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS addresses (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          phone TEXT NOT NULL,
+          province TEXT NOT NULL,
+          city TEXT NOT NULL,
+          district TEXT NOT NULL,
+          detail TEXT NOT NULL,
+          postal_code TEXT,
+          is_default INTEGER NOT NULL DEFAULT 0,
+          tag TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      _log('Created addresses table in upgrade');
+
+      // 创建会员等级表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS member_levels (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          min_points INTEGER NOT NULL,
+          discount REAL NOT NULL DEFAULT 1.0,
+          points_bonus INTEGER NOT NULL DEFAULT 0,
+          icon TEXT,
+          privileges TEXT,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      _log('Created member_levels table in upgrade');
+
+      // 创建物流公司表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS logistics_companies (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          code TEXT NOT NULL,
+          website TEXT,
+          phone TEXT,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      _log('Created logistics_companies table in upgrade');
+
+      // 创建物流跟踪记录表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS logistics_tracks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          order_id TEXT NOT NULL,
+          logistics_company_id INTEGER,
+          tracking_number TEXT,
+          status TEXT NOT NULL,
+          description TEXT NOT NULL,
+          location TEXT,
+          track_time INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (logistics_company_id) REFERENCES logistics_companies(id) ON DELETE SET NULL
+        );
+      ''');
+      _log('Created logistics_tracks table in upgrade');
+
+      // 创建支付记录表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS payment_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          order_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          payment_no TEXT NOT NULL,
+          amount INTEGER NOT NULL,
+          points_used INTEGER NOT NULL DEFAULT 0,
+          cash_amount INTEGER NOT NULL DEFAULT 0,
+          payment_method TEXT NOT NULL,
+          third_party_payment_id TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          paid_at INTEGER,
+          failure_reason TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      _log('Created payment_records table in upgrade');
+
+      // 创建库存变动记录表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS stock_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          product_id INTEGER NOT NULL,
+          sku_id INTEGER,
+          type TEXT NOT NULL,
+          quantity INTEGER NOT NULL,
+          stock_before INTEGER NOT NULL,
+          stock_after INTEGER NOT NULL,
+          related_id TEXT,
+          remark TEXT,
+          operator_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (product_id) REFERENCES star_products(id) ON DELETE CASCADE
+        );
+      ''');
+      _log('Created stock_records table in upgrade');
+
+      // 创建商家表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS merchants (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          logo TEXT,
+          description TEXT,
+          phone TEXT,
+          email TEXT,
+          address TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          rating REAL NOT NULL DEFAULT 0.0,
+          total_sales INTEGER NOT NULL DEFAULT 0,
+          approved_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      _log('Created merchants table in upgrade');
+
+      // 创建新表的索引
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_coupons_code ON coupons (code)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_user_coupons_user_id ON user_coupons (user_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_user_coupons_coupon_id ON user_coupons (coupon_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_user_coupons_status ON user_coupons (status)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_red_packet_claims_red_packet_id ON red_packet_claims (red_packet_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_red_packet_claims_user_id ON red_packet_claims (user_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_shopping_cards_card_no ON shopping_cards (card_no)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_shopping_cards_user_id ON shopping_cards (user_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_shopping_card_transactions_shopping_card_id ON shopping_card_transactions (shopping_card_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_shopping_card_transactions_order_id ON shopping_card_transactions (order_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_addresses_user_id ON addresses (user_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_addresses_is_default ON addresses (is_default)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_member_levels_min_points ON member_levels (min_points)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_logistics_companies_code ON logistics_companies (code)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_logistics_tracks_order_id ON logistics_tracks (order_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_logistics_tracks_tracking_number ON logistics_tracks (tracking_number)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_payment_records_order_id ON payment_records (order_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_payment_records_user_id ON payment_records (user_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_payment_records_payment_no ON payment_records (payment_no)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_stock_records_product_id ON stock_records (product_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_stock_records_sku_id ON stock_records (sku_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_merchants_user_id ON merchants (user_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_merchants_status ON merchants (status)');
+      _log('Created indexes for new tables in upgrade');
+    }
   }
 
   /// 检查并创建所有缺失的表
@@ -1248,6 +1909,24 @@ class ProductDatabaseService {
     final db = await database;
     return await db.query('star_products',
         where: 'is_deleted = 0', orderBy: 'created_at DESC');
+  }
+
+  /// 根据商家ID获取商品
+  Future<List<Map<String, dynamic>>> getProductsByMerchantId(int merchantId) async {
+    final db = await database;
+    return await db.query('star_products',
+        where: 'merchant_id = ? AND is_deleted = 0',
+        whereArgs: [merchantId],
+        orderBy: 'created_at DESC');
+  }
+
+  /// 获取所有已上架的商品（用户端浏览）
+  Future<List<Map<String, dynamic>>> getActiveProducts() async {
+    final db = await database;
+    return await db.query('star_products',
+        where: 'status = ? AND is_deleted = 0 AND is_active = 1',
+        whereArgs: ['active'],
+        orderBy: 'created_at DESC');
   }
 
   /// 根据ID获取商品
@@ -2345,6 +3024,880 @@ class ProductDatabaseService {
     return await db.query(
       'reviews',
       orderBy: 'created_at DESC',
+    );
+  }
+
+  // ==========================================
+  // 优惠券相关操作
+  // ==========================================
+
+  /// 添加优惠券
+  Future<int> insertCoupon(Coupon coupon) async {
+    final db = await database;
+    return await db.insert('coupons', coupon.toMap()..remove('id'));
+  }
+
+  /// 获取所有优惠券
+  Future<List<Coupon>> getAllCoupons({bool? isActive}) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'coupons',
+      where: isActive != null ? 'is_active = ?' : null,
+      whereArgs: isActive != null ? [isActive ? 1 : 0] : null,
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => Coupon.fromMap(map)).toList();
+  }
+
+  /// 根据ID获取优惠券
+  Future<Coupon?> getCouponById(int id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'coupons',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (maps.isEmpty) return null;
+    return Coupon.fromMap(maps.first);
+  }
+
+  /// 根据编码获取优惠券
+  Future<Coupon?> getCouponByCode(String code) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'coupons',
+      where: 'code = ?',
+      whereArgs: [code],
+    );
+    if (maps.isEmpty) return null;
+    return Coupon.fromMap(maps.first);
+  }
+
+  /// 更新优惠券
+  Future<int> updateCoupon(int id, Coupon coupon) async {
+    final db = await database;
+    return await db.update(
+      'coupons',
+      coupon.toMap(),
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除优惠券
+  Future<int> deleteCoupon(int id) async {
+    final db = await database;
+    return await db.delete(
+      'coupons',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 更新优惠券已使用数量
+  Future<int> incrementCouponUsedCount(int id) async {
+    final db = await database;
+    return await db.rawUpdate(
+      'UPDATE coupons SET used_count = used_count + 1, updated_at = ? WHERE id = ?',
+      [DateTime.now().millisecondsSinceEpoch, id],
+    );
+  }
+
+  // ==========================================
+  // 用户优惠券相关操作
+  // ==========================================
+
+  /// 领取优惠券
+  Future<int> insertUserCoupon(UserCoupon userCoupon) async {
+    final db = await database;
+    return await db.insert('user_coupons', userCoupon.toMap()..remove('id'));
+  }
+
+  /// 获取用户的所有优惠券
+  Future<List<Map<String, dynamic>>> getUserCoupons(String userId, {String? status}) async {
+    final db = await database;
+    return await db.query(
+      'user_coupons',
+      where: status != null ? 'user_id = ? AND status = ?' : 'user_id = ?',
+      whereArgs: status != null ? [userId, status] : [userId],
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  /// 获取用户可用的优惠券（未使用且未过期）
+  Future<List<Map<String, dynamic>>> getUserAvailableCoupons(String userId) async {
+    final db = await database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    return await db.query(
+      'user_coupons',
+      where: 'user_id = ? AND status = ? AND (expires_at IS NULL OR expires_at > ?)',
+      whereArgs: [userId, 'unused', now],
+      orderBy: 'created_at DESC',
+    );
+  }
+
+  /// 使用优惠券
+  Future<int> useUserCoupon(int id, String orderId) async {
+    final db = await database;
+    return await db.update(
+      'user_coupons',
+      {
+        'status': 'used',
+        'order_id': orderId,
+        'used_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除用户优惠券
+  Future<int> deleteUserCoupon(int id) async {
+    final db = await database;
+    return await db.delete(
+      'user_coupons',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ==========================================
+  // 红包相关操作
+  // ==========================================
+
+  /// 添加红包
+  Future<int> insertRedPacket(RedPacket redPacket) async {
+    final db = await database;
+    return await db.insert('red_packets', redPacket.toMap()..remove('id'));
+  }
+
+  /// 获取所有红包
+  Future<List<RedPacket>> getAllRedPackets({bool? isActive}) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'red_packets',
+      where: isActive != null ? 'is_active = ?' : null,
+      whereArgs: isActive != null ? [isActive ? 1 : 0] : null,
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => RedPacket.fromMap(map)).toList();
+  }
+
+  /// 根据ID获取红包
+  Future<RedPacket?> getRedPacketById(int id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'red_packets',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (maps.isEmpty) return null;
+    return RedPacket.fromMap(maps.first);
+  }
+
+  /// 更新红包
+  Future<int> updateRedPacket(int id, RedPacket redPacket) async {
+    final db = await database;
+    return await db.update(
+      'red_packets',
+      redPacket.toMap(),
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除红包
+  Future<int> deleteRedPacket(int id) async {
+    final db = await database;
+    return await db.delete(
+      'red_packets',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 更新红包领取数量
+  Future<int> incrementRedPacketReceivedCount(int id) async {
+    final db = await database;
+    return await db.rawUpdate(
+      'UPDATE red_packets SET received_count = received_count + 1, updated_at = ? WHERE id = ?',
+      [DateTime.now().millisecondsSinceEpoch, id],
+    );
+  }
+
+  /// 领取红包记录
+  Future<int> insertRedPacketClaim(RedPacketClaim claim) async {
+    final db = await database;
+    return await db.insert('red_packet_claims', claim.toMap()..remove('id'));
+  }
+
+  /// 获取红包的领取记录
+  Future<List<RedPacketClaim>> getRedPacketClaims(int redPacketId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'red_packet_claims',
+      where: 'red_packet_id = ?',
+      whereArgs: [redPacketId],
+      orderBy: 'claimed_at DESC',
+    );
+    return maps.map((map) => RedPacketClaim.fromMap(map)).toList();
+  }
+
+  /// 获取用户领取的红包
+  Future<List<RedPacketClaim>> getUserRedPacketClaims(String userId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'red_packet_claims',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      orderBy: 'claimed_at DESC',
+    );
+    return maps.map((map) => RedPacketClaim.fromMap(map)).toList();
+  }
+
+  // ==========================================
+  // 购物卡相关操作
+  // ==========================================
+
+  /// 添加购物卡
+  Future<int> insertShoppingCard(ShoppingCard card) async {
+    final db = await database;
+    return await db.insert('shopping_cards', card.toMap()..remove('id'));
+  }
+
+  /// 获取所有购物卡
+  Future<List<ShoppingCard>> getAllShoppingCards({String? status, String? userId}) async {
+    final db = await database;
+    String? where;
+    List<dynamic>? whereArgs;
+    if (status != null && userId != null) {
+      where = 'status = ? AND user_id = ?';
+      whereArgs = [status, userId];
+    } else if (status != null) {
+      where = 'status = ?';
+      whereArgs = [status];
+    } else if (userId != null) {
+      where = 'user_id = ?';
+      whereArgs = [userId];
+    }
+    final List<Map<String, dynamic>> maps = await db.query(
+      'shopping_cards',
+      where: where,
+      whereArgs: whereArgs,
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => ShoppingCard.fromMap(map)).toList();
+  }
+
+  /// 根据卡号获取购物卡
+  Future<ShoppingCard?> getShoppingCardByNo(String cardNo) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'shopping_cards',
+      where: 'card_no = ?',
+      whereArgs: [cardNo],
+    );
+    if (maps.isEmpty) return null;
+    return ShoppingCard.fromMap(maps.first);
+  }
+
+  /// 根据ID获取购物卡
+  Future<ShoppingCard?> getShoppingCardById(int id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'shopping_cards',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (maps.isEmpty) return null;
+    return ShoppingCard.fromMap(maps.first);
+  }
+
+  /// 激活购物卡
+  Future<int> activateShoppingCard(int id, String userId) async {
+    final db = await database;
+    return await db.update(
+      'shopping_cards',
+      {
+        'status': 'active',
+        'user_id': userId,
+        'activated_at': DateTime.now().millisecondsSinceEpoch,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 更新购物卡余额
+  Future<int> updateShoppingCardBalance(int id, int newBalance) async {
+    final db = await database;
+    return await db.update(
+      'shopping_cards',
+      {
+        'balance': newBalance,
+        'status': newBalance <= 0 ? 'used' : 'active',
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除购物卡
+  Future<int> deleteShoppingCard(int id) async {
+    final db = await database;
+    return await db.delete(
+      'shopping_cards',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 添加购物卡交易记录
+  Future<int> insertShoppingCardTransaction(ShoppingCardTransaction transaction) async {
+    final db = await database;
+    return await db.insert('shopping_card_transactions', transaction.toMap()..remove('id'));
+  }
+
+  /// 获取购物卡的交易记录
+  Future<List<ShoppingCardTransaction>> getShoppingCardTransactions(int cardId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'shopping_card_transactions',
+      where: 'shopping_card_id = ?',
+      whereArgs: [cardId],
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => ShoppingCardTransaction.fromMap(map)).toList();
+  }
+
+  // ==========================================
+  // 地址相关操作
+  // ==========================================
+
+  /// 添加地址
+  Future<int> insertAddress(Address address) async {
+    final db = await database;
+    if (address.isDefault) {
+      await db.update(
+        'addresses',
+        {'is_default': 0},
+        where: 'user_id = ? AND is_default = 1',
+        whereArgs: [address.userId],
+      );
+    }
+    return await db.insert('addresses', address.toMap()..remove('id'));
+  }
+
+  /// 获取用户的所有地址
+  Future<List<Address>> getUserAddresses(String userId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'addresses',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      orderBy: 'is_default DESC, created_at DESC',
+    );
+    return maps.map((map) => Address.fromMap(map)).toList();
+  }
+
+  /// 获取用户默认地址
+  Future<Address?> getUserDefaultAddress(String userId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'addresses',
+      where: 'user_id = ? AND is_default = 1',
+      whereArgs: [userId],
+    );
+    if (maps.isEmpty) return null;
+    return Address.fromMap(maps.first);
+  }
+
+  /// 根据ID获取地址
+  Future<Address?> getAddressById(int id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'addresses',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (maps.isEmpty) return null;
+    return Address.fromMap(maps.first);
+  }
+
+  /// 更新地址
+  Future<int> updateAddress(int id, Address address) async {
+    final db = await database;
+    if (address.isDefault) {
+      await db.update(
+        'addresses',
+        {'is_default': 0},
+        where: 'user_id = ? AND is_default = 1 AND id != ?',
+        whereArgs: [address.userId, id],
+      );
+    }
+    return await db.update(
+      'addresses',
+      address.toMap(),
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 设为默认地址
+  Future<int> setDefaultAddress(int id, String userId) async {
+    final db = await database;
+    return await db.transaction((txn) async {
+      await txn.update(
+        'addresses',
+        {'is_default': 0},
+        where: 'user_id = ? AND is_default = 1',
+        whereArgs: [userId],
+      );
+      return await txn.update(
+        'addresses',
+        {'is_default': 1},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
+  }
+
+  /// 删除地址
+  Future<int> deleteAddress(int id) async {
+    final db = await database;
+    return await db.delete(
+      'addresses',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ==========================================
+  // 会员等级相关操作
+  // ==========================================
+
+  /// 添加会员等级
+  Future<int> insertMemberLevel(MemberLevel level) async {
+    final db = await database;
+    return await db.insert('member_levels', level.toMap()..remove('id'));
+  }
+
+  /// 获取所有会员等级
+  Future<List<MemberLevel>> getAllMemberLevels() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'member_levels',
+      orderBy: 'sort_order ASC, min_points ASC',
+    );
+    return maps.map((map) => MemberLevel.fromMap(map)).toList();
+  }
+
+  /// 根据ID获取会员等级
+  Future<MemberLevel?> getMemberLevelById(int id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'member_levels',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (maps.isEmpty) return null;
+    return MemberLevel.fromMap(maps.first);
+  }
+
+  /// 根据积分获取会员等级
+  Future<MemberLevel?> getMemberLevelByPoints(int points) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'member_levels',
+      where: 'min_points <= ?',
+      whereArgs: [points],
+      orderBy: 'min_points DESC',
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return MemberLevel.fromMap(maps.first);
+  }
+
+  /// 更新会员等级
+  Future<int> updateMemberLevel(int id, MemberLevel level) async {
+    final db = await database;
+    return await db.update(
+      'member_levels',
+      level.toMap(),
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除会员等级
+  Future<int> deleteMemberLevel(int id) async {
+    final db = await database;
+    return await db.delete(
+      'member_levels',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ==========================================
+  // 物流公司相关操作
+  // ==========================================
+
+  /// 添加物流公司
+  Future<int> insertLogisticsCompany(LogisticsCompany company) async {
+    final db = await database;
+    return await db.insert('logistics_companies', company.toMap()..remove('id'));
+  }
+
+  /// 获取所有物流公司
+  Future<List<LogisticsCompany>> getAllLogisticsCompanies({bool? isActive}) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'logistics_companies',
+      where: isActive != null ? 'is_active = ?' : null,
+      whereArgs: isActive != null ? [isActive ? 1 : 0] : null,
+      orderBy: 'sort_order ASC, name ASC',
+    );
+    return maps.map((map) => LogisticsCompany.fromMap(map)).toList();
+  }
+
+  /// 根据ID获取物流公司
+  Future<LogisticsCompany?> getLogisticsCompanyById(int id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'logistics_companies',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (maps.isEmpty) return null;
+    return LogisticsCompany.fromMap(maps.first);
+  }
+
+  /// 根据编码获取物流公司
+  Future<LogisticsCompany?> getLogisticsCompanyByCode(String code) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'logistics_companies',
+      where: 'code = ?',
+      whereArgs: [code],
+    );
+    if (maps.isEmpty) return null;
+    return LogisticsCompany.fromMap(maps.first);
+  }
+
+  /// 更新物流公司
+  Future<int> updateLogisticsCompany(int id, LogisticsCompany company) async {
+    final db = await database;
+    return await db.update(
+      'logistics_companies',
+      company.toMap(),
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除物流公司
+  Future<int> deleteLogisticsCompany(int id) async {
+    final db = await database;
+    return await db.delete(
+      'logistics_companies',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ==========================================
+  // 物流跟踪相关操作
+  // ==========================================
+
+  /// 添加物流跟踪记录
+  Future<int> insertLogisticsTrack(LogisticsTrack track) async {
+    final db = await database;
+    return await db.insert('logistics_tracks', track.toMap()..remove('id'));
+  }
+
+  /// 获取订单的物流跟踪记录
+  Future<List<LogisticsTrack>> getLogisticsTracksByOrderId(String orderId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'logistics_tracks',
+      where: 'order_id = ?',
+      whereArgs: [orderId],
+      orderBy: 'track_time DESC',
+    );
+    return maps.map((map) => LogisticsTrack.fromMap(map)).toList();
+  }
+
+  /// 根据快递单号获取物流跟踪记录
+  Future<List<LogisticsTrack>> getLogisticsTracksByTrackingNumber(String trackingNumber) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'logistics_tracks',
+      where: 'tracking_number = ?',
+      whereArgs: [trackingNumber],
+      orderBy: 'track_time DESC',
+    );
+    return maps.map((map) => LogisticsTrack.fromMap(map)).toList();
+  }
+
+  /// 更新物流跟踪状态
+  Future<int> updateLogisticsTrackStatus(int id, String status, String description, {String? location}) async {
+    final db = await database;
+    return await db.update(
+      'logistics_tracks',
+      {
+        'status': status,
+        'description': description,
+        'location': location,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除物流跟踪记录
+  Future<int> deleteLogisticsTrack(int id) async {
+    final db = await database;
+    return await db.delete(
+      'logistics_tracks',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ==========================================
+  // 支付记录相关操作
+  // ==========================================
+
+  /// 添加支付记录
+  Future<int> insertPaymentRecord(PaymentRecord record) async {
+    final db = await database;
+    return await db.insert('payment_records', record.toMap()..remove('id'));
+  }
+
+  /// 获取订单的支付记录
+  Future<PaymentRecord?> getPaymentRecordByOrderId(String orderId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'payment_records',
+      where: 'order_id = ?',
+      whereArgs: [orderId],
+    );
+    if (maps.isEmpty) return null;
+    return PaymentRecord.fromMap(maps.first);
+  }
+
+  /// 根据支付流水号获取支付记录
+  Future<PaymentRecord?> getPaymentRecordByPaymentNo(String paymentNo) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'payment_records',
+      where: 'payment_no = ?',
+      whereArgs: [paymentNo],
+    );
+    if (maps.isEmpty) return null;
+    return PaymentRecord.fromMap(maps.first);
+  }
+
+  /// 获取所有支付记录
+  Future<List<PaymentRecord>> getAllPaymentRecords() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'payment_records',
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => PaymentRecord.fromMap(map)).toList();
+  }
+
+  /// 获取用户的所有支付记录
+  Future<List<PaymentRecord>> getUserPaymentRecords(String userId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'payment_records',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => PaymentRecord.fromMap(map)).toList();
+  }
+
+  /// 更新支付记录状态
+  Future<int> updatePaymentRecordStatus(int id, String status, {String? thirdPartyPaymentId, String? failureReason}) async {
+    final db = await database;
+    return await db.update(
+      'payment_records',
+      {
+        'status': status,
+        'third_party_payment_id': thirdPartyPaymentId,
+        'failure_reason': failureReason,
+        'paid_at': status == 'success' ? DateTime.now().millisecondsSinceEpoch : null,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除支付记录
+  Future<int> deletePaymentRecord(int id) async {
+    final db = await database;
+    return await db.delete(
+      'payment_records',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ==========================================
+  // 库存记录相关操作
+  // ==========================================
+
+  /// 添加库存变动记录
+  Future<int> insertStockRecord(StockRecord record) async {
+    final db = await database;
+    return await db.insert('stock_records', record.toMap()..remove('id'));
+  }
+
+  /// 获取商品的库存变动记录
+  Future<List<StockRecord>> getStockRecordsByProductId(int productId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'stock_records',
+      where: 'product_id = ?',
+      whereArgs: [productId],
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => StockRecord.fromMap(map)).toList();
+  }
+
+  /// 获取所有库存变动记录
+  Future<List<StockRecord>> getAllStockRecords() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'stock_records',
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => StockRecord.fromMap(map)).toList();
+  }
+
+  /// 获取SKU的库存变动记录
+  Future<List<StockRecord>> getStockRecordsBySkuId(int skuId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'stock_records',
+      where: 'sku_id = ?',
+      whereArgs: [skuId],
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => StockRecord.fromMap(map)).toList();
+  }
+
+  /// 删除库存记录
+  Future<int> deleteStockRecord(int id) async {
+    final db = await database;
+    return await db.delete(
+      'stock_records',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ==========================================
+  // 商家相关操作
+  // ==========================================
+
+  /// 添加商家
+  Future<int> insertMerchant(Merchant merchant) async {
+    final db = await database;
+    return await db.insert('merchants', merchant.toMap()..remove('id'));
+  }
+
+  /// 获取所有商家
+  Future<List<Merchant>> getAllMerchants({String? status}) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'merchants',
+      where: status != null ? 'status = ?' : null,
+      whereArgs: status != null ? [status] : null,
+      orderBy: 'created_at DESC',
+    );
+    return maps.map((map) => Merchant.fromMap(map)).toList();
+  }
+
+  /// 根据用户ID获取商家
+  Future<Merchant?> getMerchantByUserId(String userId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'merchants',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
+    if (maps.isEmpty) return null;
+    return Merchant.fromMap(maps.first);
+  }
+
+  /// 根据ID获取商家
+  Future<Merchant?> getMerchantById(int id) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'merchants',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (maps.isEmpty) return null;
+    return Merchant.fromMap(maps.first);
+  }
+
+  /// 更新商家信息
+  Future<int> updateMerchant(int id, Merchant merchant) async {
+    final db = await database;
+    return await db.update(
+      'merchants',
+      merchant.toMap(),
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 更新商家状态
+  Future<int> updateMerchantStatus(int id, String status) async {
+    final db = await database;
+    return await db.update(
+      'merchants',
+      {
+        'status': status,
+        'approved_at': status == 'active' ? DateTime.now().millisecondsSinceEpoch : null,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 更新商家评分和销量
+  Future<int> updateMerchantStats(int id, double rating, int totalSales) async {
+    final db = await database;
+    return await db.update(
+      'merchants',
+      {
+        'rating': rating,
+        'total_sales': totalSales,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 删除商家
+  Future<int> deleteMerchant(int id) async {
+    final db = await database;
+    return await db.delete(
+      'merchants',
+      where: 'id = ?',
+      whereArgs: [id],
     );
   }
 }

@@ -5,7 +5,11 @@ import 'package:path/path.dart' as path_package;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart' as sqflite_package;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart' if (dart.library.html) 'package:moment_keep/services/empty_sqflite_ffi.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart'
+    if (dart.library.html) 'package:moment_keep/services/empty_sqflite_ffi.dart';
+import 'package:moment_keep/domain/entities/star_exchange.dart';
+import 'package:moment_keep/services/storage_path_service.dart';
+import 'package:moment_keep/services/database_service.dart';
 
 // 定义动态类型别名以适配不同环境
 typedef DatabaseType = dynamic;
@@ -42,11 +46,20 @@ class UserDatabaseService {
   static const String _databaseName = 'moment_keep_users.db';
 
   /// 数据库版本
-  static const int _databaseVersion = 2;
+  static const int _databaseVersion = 3;
+
+  /// 用户类型常量 - 位掩码方式
+  static const int userTypeBuyer = 1;    // 0b001
+  static const int userTypeSeller = 2;   // 0b010
+  static const int userTypeAdmin = 4;    // 0b100
 
   /// 预初始化数据库服务（轻量级）
   /// 仅进行必要的准备工作，不执行耗时操作
   void preInitialize() {
+    // 初始化存储路径服务
+    StoragePathService.initialize();
+    // 初始化数据库服务
+    DatabaseService().preInitialize();
     // 这里可以做一些轻量级的准备工作
     _initializationCompleter = Completer<void>();
   }
@@ -92,9 +105,10 @@ class UserDatabaseService {
         return mockDb;
       }
       
-      final directory = await _getDefaultDirectory();
+      // 使用服务器目录存放用户数据库
+      final directory = await _getServerDirectory();
       if (directory == null) {
-        throw Exception('Unable to access default directory');
+        throw Exception('Unable to access server directory');
       }
 
       final path = path_package.join(directory.path, _databaseName);
@@ -144,30 +158,9 @@ class UserDatabaseService {
         // 使用自定义存储路径下的default目录
         storageDir = Directory('$customPath/default');
       } else {
-        // 使用默认路径下的default目录
-        Directory directory;
-        if (defaultTargetPlatform == TargetPlatform.android ||
-            defaultTargetPlatform == TargetPlatform.iOS) {
-          // 移动端使用应用文档目录
-          directory = await getApplicationDocumentsDirectory();
-        } else if (defaultTargetPlatform == TargetPlatform.windows) {
-          // Windows使用文档目录
-          directory = Directory(path_package.join(
-              Platform.environment['USERPROFILE']!, 'Documents'));
-        } else if (defaultTargetPlatform == TargetPlatform.macOS) {
-          // macOS使用文档目录
-          directory = Directory(
-              path_package.join(Platform.environment['HOME']!, 'Documents'));
-        } else if (defaultTargetPlatform == TargetPlatform.linux) {
-          // Linux使用文档目录
-          directory = Directory(
-              path_package.join(Platform.environment['HOME']!, 'Documents'));
-        } else {
-          throw UnsupportedError('Unsupported platform');
-        }
-
-        // 创建默认存储目录
-        storageDir = Directory(path_package.join(directory.path, 'MomentKeep', 'default'));
+        // 使用StoragePathService获取默认目录
+        final defaultPath = await StoragePathService.getDefaultDirectory();
+        storageDir = Directory(defaultPath);
       }
 
       // 确保存储目录存在
@@ -182,15 +175,37 @@ class UserDatabaseService {
     }
   }
 
+  /// 获取服务器目录（cloud/database/目录）
+  /// 用于存放用户数据库等核心业务数据
+  Future<Directory?> _getServerDirectory() async {
+    try {
+      // 使用StoragePathService获取服务器数据库目录
+      final serverDatabasePath = await StoragePathService.getServerDatabaseDirectory();
+      final serverDir = Directory(serverDatabasePath);
+
+      // 确保存储目录存在
+      if (!await serverDir.exists()) {
+        await serverDir.create(recursive: true);
+        _log('创建服务器目录: ${serverDir.path}');
+      }
+
+      _log('使用服务器目录: ${serverDir.path}');
+      return serverDir;
+    } catch (e) {
+      _log('Error getting server directory: $e');
+      return null;
+    }
+  }
+
   /// 创建数据库表结构
   Future<void> _onCreate(dynamic db, int version) async {
     _log('Creating user database tables, version: $version');
 
-    // 创建用户主表
+    // 创建用户主表（使用INT支持位掩码）
     await db.execute('''
       CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
-        user_type TINYINT NOT NULL,
+        user_type INT NOT NULL,
         status TINYINT NOT NULL DEFAULT 0,
         create_time DATETIME NOT NULL,
         update_time DATETIME NOT NULL,
@@ -272,6 +287,45 @@ class UserDatabaseService {
     await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_job_number ON admin_extensions(job_number);');
     await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_email ON admin_extensions(enterprise_email);');
 
+    // 创建买家信用积分表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS buyer_credit_scores (
+        user_id TEXT PRIMARY KEY,
+        credit_score INT NOT NULL DEFAULT 100,
+        credit_level VARCHAR(20) NOT NULL DEFAULT '良好',
+        total_orders INT NOT NULL DEFAULT 0,
+        completed_orders INT NOT NULL DEFAULT 0,
+        refund_rate REAL NOT NULL DEFAULT 0.0,
+        on_time_rate REAL NOT NULL DEFAULT 100.0,
+        create_time DATETIME NOT NULL,
+        update_time DATETIME NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+      );
+    ''');
+    _log('Created buyer_credit_scores table');
+
+    // 创建卖家信用积分表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS seller_credit_scores (
+        user_id TEXT PRIMARY KEY,
+        credit_score INT NOT NULL DEFAULT 100,
+        credit_level VARCHAR(20) NOT NULL DEFAULT '良好',
+        total_orders INT NOT NULL DEFAULT 0,
+        completed_orders INT NOT NULL DEFAULT 0,
+        refund_rate REAL NOT NULL DEFAULT 0.0,
+        on_time_delivery_rate REAL NOT NULL DEFAULT 100.0,
+        average_rating REAL NOT NULL DEFAULT 5.0,
+        create_time DATETIME NOT NULL,
+        update_time DATETIME NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+      );
+    ''');
+    _log('Created seller_credit_scores table');
+
+    // 创建信用积分表索引
+    await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_buyer_credit_user_id ON buyer_credit_scores(user_id);');
+    await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_seller_credit_user_id ON seller_credit_scores(user_id);');
+
     _log('User database tables created successfully');
   }
 
@@ -282,12 +336,105 @@ class UserDatabaseService {
     // 处理从版本1升级到版本2 - 添加real_name列到buyer_extensions表
     if (oldVersion < 2) {
       try {
-        // 为buyer_extensions表添加real_name列
-        await db.execute(
-            'ALTER TABLE buyer_extensions ADD COLUMN real_name VARCHAR(50);');
+        await db.execute('ALTER TABLE buyer_extensions ADD COLUMN real_name VARCHAR(50);');
         _log('Added real_name column to buyer_extensions table');
       } catch (e) {
-        _log('Error during database upgrade: $e');
+        _log('Error during database upgrade v1->v2: $e');
+      }
+    }
+
+    // 处理从版本2升级到版本3 - 支持多重身份和添加信用积分表
+    if (oldVersion < 3) {
+      try {
+        _log('Starting database upgrade v2->v3');
+
+        // 1. 迁移用户类型到位掩码格式
+        // 创建临时表
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS users_temp (
+            user_id TEXT PRIMARY KEY,
+            user_type INT NOT NULL,
+            status TINYINT NOT NULL DEFAULT 0,
+            create_time DATETIME NOT NULL,
+            update_time DATETIME NOT NULL,
+            last_login_time DATETIME,
+            login_ip VARCHAR(50),
+            delete_flag TINYINT NOT NULL DEFAULT 0
+          );
+        ''');
+        _log('Created temporary users table');
+
+        // 迁移数据并转换user_type
+        await db.execute('''
+          INSERT INTO users_temp 
+          (user_id, user_type, status, create_time, update_time, last_login_time, login_ip, delete_flag)
+          SELECT 
+            user_id,
+            CASE 
+              WHEN user_type = 0 THEN 1
+              WHEN user_type = 1 THEN 2
+              WHEN user_type = 2 THEN 4
+              ELSE 1
+            END as user_type,
+            status, create_time, update_time, last_login_time, login_ip, delete_flag
+          FROM users;
+        ''');
+        _log('Migrated user data with type conversion');
+
+        // 删除旧表并重命名新表
+        await db.execute('DROP TABLE users;');
+        await db.execute('ALTER TABLE users_temp RENAME TO users;');
+        _log('Replaced users table');
+
+        // 重新创建索引
+        await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id);');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_users_user_type ON users(user_type);');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);');
+        _log('Recreated users table indexes');
+
+        // 2. 创建买家信用积分表
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS buyer_credit_scores (
+            user_id TEXT PRIMARY KEY,
+            credit_score INT NOT NULL DEFAULT 100,
+            credit_level VARCHAR(20) NOT NULL DEFAULT '良好',
+            total_orders INT NOT NULL DEFAULT 0,
+            completed_orders INT NOT NULL DEFAULT 0,
+            refund_rate REAL NOT NULL DEFAULT 0.0,
+            on_time_rate REAL NOT NULL DEFAULT 100.0,
+            create_time DATETIME NOT NULL,
+            update_time DATETIME NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+          );
+        ''');
+        _log('Created buyer_credit_scores table');
+
+        // 3. 创建卖家信用积分表
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS seller_credit_scores (
+            user_id TEXT PRIMARY KEY,
+            credit_score INT NOT NULL DEFAULT 100,
+            credit_level VARCHAR(20) NOT NULL DEFAULT '良好',
+            total_orders INT NOT NULL DEFAULT 0,
+            completed_orders INT NOT NULL DEFAULT 0,
+            refund_rate REAL NOT NULL DEFAULT 0.0,
+            on_time_delivery_rate REAL NOT NULL DEFAULT 100.0,
+            average_rating REAL NOT NULL DEFAULT 5.0,
+            create_time DATETIME NOT NULL,
+            update_time DATETIME NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+          );
+        ''');
+        _log('Created seller_credit_scores table');
+
+        // 4. 创建信用积分表索引
+        await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_buyer_credit_user_id ON buyer_credit_scores(user_id);');
+        await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_seller_credit_user_id ON seller_credit_scores(user_id);');
+        _log('Created credit score table indexes');
+
+        _log('Database upgrade v2->v3 completed successfully');
+      } catch (e) {
+        _log('Error during database upgrade v2->v3: $e');
         // 允许部分失败，继续尝试后续升级
       }
     }
@@ -298,8 +445,36 @@ class UserDatabaseService {
     return _MockDatabaseForWeb();
   }
 
-  /// 插入新用户
+  /// 插入新用户（向后兼容的单身份方法）
   Future<int> insertUser(Map<String, dynamic> userData, Map<String, dynamic>? extensionData) async {
+    final userType = userData['user_type'] as int;
+    
+    Map<String, dynamic>? buyerExtension;
+    Map<String, dynamic>? sellerExtension;
+    Map<String, dynamic>? adminExtension;
+    
+    // 根据旧的用户类型转换为位掩码并分配扩展数据
+    if (userType == 0) {
+      userData['user_type'] = userTypeBuyer;
+      buyerExtension = extensionData;
+    } else if (userType == 1) {
+      userData['user_type'] = userTypeSeller;
+      sellerExtension = extensionData;
+    } else if (userType == 2) {
+      userData['user_type'] = userTypeAdmin;
+      adminExtension = extensionData;
+    } else if ((userType & userTypeBuyer) != 0 || (userType & userTypeSeller) != 0 || (userType & userTypeAdmin) != 0) {
+      // 已经是位掩码格式，不需要转换
+      if ((userType & userTypeBuyer) != 0) buyerExtension = extensionData;
+      if ((userType & userTypeSeller) != 0) sellerExtension = extensionData;
+      if ((userType & userTypeAdmin) != 0) adminExtension = extensionData;
+    }
+    
+    return await insertUserMulti(userData, buyerExtension, sellerExtension, adminExtension);
+  }
+
+  /// 插入新用户（支持多重身份）
+  Future<int> insertUserMulti(Map<String, dynamic> userData, Map<String, dynamic>? buyerExtension, Map<String, dynamic>? sellerExtension, Map<String, dynamic>? adminExtension) async {
     final db = await database;
     int result = 0;
 
@@ -308,30 +483,32 @@ class UserDatabaseService {
       // 插入用户主表
       result = await txn.insert('users', userData);
 
-      // 根据用户类型插入扩展表
-      final userType = userData['user_type'];
+      final userType = userData['user_type'] as int;
       final userId = userData['user_id'];
 
-      if (extensionData != null) {
-        extensionData['user_id'] = userId;
+      // 插入买家扩展表
+      if ((userType & userTypeBuyer) != 0 && buyerExtension != null) {
+        buyerExtension['user_id'] = userId;
+        await txn.insert('buyer_extensions', buyerExtension);
+      }
 
-        if (userType == 0) {
-          // 买家
-          await txn.insert('buyer_extensions', extensionData);
-        } else if (userType == 1) {
-          // 商家
-          await txn.insert('seller_extensions', extensionData);
-        } else if (userType == 2) {
-          // 管理员
-          await txn.insert('admin_extensions', extensionData);
-        }
+      // 插入商家扩展表
+      if ((userType & userTypeSeller) != 0 && sellerExtension != null) {
+        sellerExtension['user_id'] = userId;
+        await txn.insert('seller_extensions', sellerExtension);
+      }
+
+      // 插入管理员扩展表
+      if ((userType & userTypeAdmin) != 0 && adminExtension != null) {
+        adminExtension['user_id'] = userId;
+        await txn.insert('admin_extensions', adminExtension);
       }
     });
 
     return result;
   }
 
-  /// 根据用户ID获取用户信息
+  /// 根据用户ID获取用户信息（支持多重身份）
   Future<Map<String, dynamic>?> getUserById(String userId) async {
     final db = await database;
     final userResult = await db.query(
@@ -347,14 +524,18 @@ class UserDatabaseService {
 
     // 创建一个新的Map对象，而不是直接使用数据库返回的只读对象
     final userData = Map<String, dynamic>.from(userResult.first);
-    final userType = userData['user_type'];
-    Map<String, dynamic>? extensionData;
+    final userType = userData['user_type'] as int;
 
-    debugPrint('获取用户ID: $userId 的信息，用户类型: $userType');
+    debugPrint('获取用户ID: $userId 的信息，用户类型(位掩码): $userType');
 
-    // 获取扩展信息
-    if (userType == 0) {
-      // 买家
+    // 处理用户类型，兼容旧的0/1/2格式和新的位掩码格式
+    final isBuyer = (userType == 0) || ((userType & userTypeBuyer) != 0);
+    final isSeller = (userType == 1) || ((userType & userTypeSeller) != 0);
+    final isAdmin = (userType == 2) || ((userType & userTypeAdmin) != 0);
+
+    // 获取所有相关的扩展信息（支持多重身份）
+    // 买家扩展信息
+    if (isBuyer) {
       final buyerResult = await db.query(
         'buyer_extensions',
         where: 'user_id = ?',
@@ -362,13 +543,13 @@ class UserDatabaseService {
         limit: 1,
       );
       if (buyerResult.isNotEmpty) {
-        extensionData = Map<String, dynamic>.from(buyerResult.first);
-        debugPrint('从买家扩展表获取的信息: $extensionData');
-      } else {
-        debugPrint('买家扩展表中没有用户ID: $userId 的信息');
+        userData['buyer_extension'] = Map<String, dynamic>.from(buyerResult.first);
+        debugPrint('从买家扩展表获取的信息: ${userData['buyer_extension']}');
       }
-    } else if (userType == 1) {
-      // 商家
+    }
+
+    // 商家扩展信息
+    if (isSeller) {
       final sellerResult = await db.query(
         'seller_extensions',
         where: 'user_id = ?',
@@ -376,13 +557,13 @@ class UserDatabaseService {
         limit: 1,
       );
       if (sellerResult.isNotEmpty) {
-        extensionData = Map<String, dynamic>.from(sellerResult.first);
-        debugPrint('从商家扩展表获取的信息: $extensionData');
-      } else {
-        debugPrint('商家扩展表中没有用户ID: $userId 的信息');
+        userData['seller_extension'] = Map<String, dynamic>.from(sellerResult.first);
+        debugPrint('从商家扩展表获取的信息: ${userData['seller_extension']}');
       }
-    } else if (userType == 2) {
-      // 管理员
+    }
+
+    // 管理员扩展信息
+    if (isAdmin) {
       final adminResult = await db.query(
         'admin_extensions',
         where: 'user_id = ?',
@@ -390,20 +571,33 @@ class UserDatabaseService {
         limit: 1,
       );
       if (adminResult.isNotEmpty) {
-        extensionData = Map<String, dynamic>.from(adminResult.first);
-        debugPrint('从管理员扩展表获取的信息: $extensionData');
-      } else {
-        debugPrint('管理员扩展表中没有用户ID: $userId 的信息');
+        userData['admin_extension'] = Map<String, dynamic>.from(adminResult.first);
+        debugPrint('从管理员扩展表获取的信息: ${userData['admin_extension']}');
       }
     }
 
-    if (extensionData != null) {
-      userData.addAll(extensionData);
-      debugPrint('合并后的用户信息: $userData');
-    } else {
-      debugPrint('没有获取到用户ID: $userId 的扩展信息');
+    // 为了向后兼容，如果只有一个身份，同时把扩展信息放在根级别
+    final hasOnlyBuyer = isBuyer && !isSeller && !isAdmin;
+    final hasOnlySeller = isSeller && !isBuyer && !isAdmin;
+    final hasOnlyAdmin = isAdmin && !isBuyer && !isSeller;
+    
+    debugPrint('合并扩展信息 - hasOnlyBuyer: $hasOnlyBuyer, hasOnlySeller: $hasOnlySeller, hasOnlyAdmin: $hasOnlyAdmin');
+    debugPrint('合并前userData keys: ${userData.keys.toList()}');
+    
+    if (hasOnlyBuyer && userData.containsKey('buyer_extension')) {
+      debugPrint('合并买家扩展信息到根级别');
+      userData.addAll(userData['buyer_extension']);
+    } else if (hasOnlySeller && userData.containsKey('seller_extension')) {
+      debugPrint('合并商家扩展信息到根级别');
+      userData.addAll(userData['seller_extension']);
+    } else if (hasOnlyAdmin && userData.containsKey('admin_extension')) {
+      debugPrint('合并管理员扩展信息到根级别');
+      userData.addAll(userData['admin_extension']);
     }
+    
+    debugPrint('合并后userData keys: ${userData.keys.toList()}');
 
+    debugPrint('合并后的用户信息: $userData');
     return userData;
   }
 
@@ -439,7 +633,7 @@ class UserDatabaseService {
 
       debugPrint('获取用户类型结果: $userResult');
 
-      int userType = 0; // 默认用户类型为买家
+      int userType = userTypeBuyer; // 默认用户类型为买家
       bool userExists = userResult.isNotEmpty;
 
       if (userExists) {
@@ -468,7 +662,12 @@ class UserDatabaseService {
       }
 
       // 无论用户是否存在，都尝试更新或插入扩展数据
-      if (userType == 0) {
+      // 处理用户类型，兼容旧的0/1/2格式和新的位掩码格式
+      final isBuyer = (userType == 0) || ((userType & userTypeBuyer) != 0);
+      final isSeller = (userType == 1) || ((userType & userTypeSeller) != 0);
+      final isAdmin = (userType == 2) || ((userType & userTypeAdmin) != 0);
+      
+      if (isBuyer) {
         // 买家
         final updateResult = await db.update(
           'buyer_extensions',
@@ -487,50 +686,88 @@ class UserDatabaseService {
           insertData['nickname'] = insertData['nickname'] ?? userId;
           insertData['email'] = insertData['email'] ?? '';
           insertData['gender'] = insertData['gender'] ?? 0;
-          insertData['birthday'] = insertData['birthday'] ?? null;
-          insertData['phone'] = insertData['phone'] ?? null;
+          insertData['birthday'] = insertData['birthday'];
+          insertData['phone'] = insertData['phone'];
           insertData['password_hash'] = insertData['password_hash'] ?? '';
-          insertData['secret_question'] = insertData['secret_question'] ?? null;
-          insertData['default_address_id'] = insertData['default_address_id'] ?? null;
+          insertData['secret_question'] = insertData['secret_question'];
+          insertData['default_address_id'] = insertData['default_address_id'];
           insertData['member_level'] = insertData['member_level'] ?? 0;
           insertData['points'] = insertData['points'] ?? 0;
-          insertData['id_card_encrypt'] = insertData['id_card_encrypt'] ?? null;
-          insertData['privacy_setting'] = insertData['privacy_setting'] ?? null;
+          insertData['id_card_encrypt'] = insertData['id_card_encrypt'];
+          insertData['privacy_setting'] = insertData['privacy_setting'];
           
           await db.insert('buyer_extensions', insertData);
           debugPrint('插入买家扩展表记录成功');
         }
-      } else if (userType == 1) {
-        // 商家
-        final updateResult = await db.update(
-          'seller_extensions',
-          extensionData,
-          where: 'user_id = ?',
-          whereArgs: [userId],
-        );
-        debugPrint('更新商家扩展表结果: $updateResult');
-        
-        // 如果没有记录被更新，说明扩展表中不存在对应的用户记录，需要插入一条新记录
-        if (updateResult == 0) {
-          extensionData['user_id'] = userId;
-          await db.insert('seller_extensions', extensionData);
-          debugPrint('插入商家扩展表记录成功');
+      }
+      if (isSeller) {
+        // 商家 - 移除不适用的字段
+        final sellerExtensionData = {...extensionData};
+        sellerExtensionData.remove('points');
+        sellerExtensionData.remove('avatar');
+        sellerExtensionData.remove('member_level');
+        sellerExtensionData.remove('nickname');
+        sellerExtensionData.remove('gender');
+        sellerExtensionData.remove('birthday');
+        sellerExtensionData.remove('email');
+        sellerExtensionData.remove('phone');
+        sellerExtensionData.remove('password_hash');
+        sellerExtensionData.remove('secret_question');
+        sellerExtensionData.remove('default_address_id');
+        sellerExtensionData.remove('id_card_encrypt');
+        sellerExtensionData.remove('real_name');
+        sellerExtensionData.remove('privacy_setting');
+
+        if (sellerExtensionData.isNotEmpty) {
+          final updateResult = await db.update(
+            'seller_extensions',
+            sellerExtensionData,
+            where: 'user_id = ?',
+            whereArgs: [userId],
+          );
+          debugPrint('更新商家扩展表结果: $updateResult');
+          
+          // 如果没有记录被更新，说明扩展表中不存在对应的用户记录，需要插入一条新记录
+          if (updateResult == 0) {
+            sellerExtensionData['user_id'] = userId;
+            await db.insert('seller_extensions', sellerExtensionData);
+            debugPrint('插入商家扩展表记录成功');
+          }
         }
-      } else if (userType == 2) {
-        // 管理员
-        final updateResult = await db.update(
-          'admin_extensions',
-          extensionData,
-          where: 'user_id = ?',
-          whereArgs: [userId],
-        );
-        debugPrint('更新管理员扩展表结果: $updateResult');
-        
-        // 如果没有记录被更新，说明扩展表中不存在对应的用户记录，需要插入一条新记录
-        if (updateResult == 0) {
-          extensionData['user_id'] = userId;
-          await db.insert('admin_extensions', extensionData);
-          debugPrint('插入管理员扩展表记录成功');
+      }
+      if (isAdmin) {
+        // 管理员 - 移除不适用的字段
+        final adminExtensionData = {...extensionData};
+        adminExtensionData.remove('points');
+        adminExtensionData.remove('avatar');
+        adminExtensionData.remove('member_level');
+        adminExtensionData.remove('nickname');
+        adminExtensionData.remove('gender');
+        adminExtensionData.remove('birthday');
+        adminExtensionData.remove('email');
+        adminExtensionData.remove('phone');
+        adminExtensionData.remove('password_hash');
+        adminExtensionData.remove('secret_question');
+        adminExtensionData.remove('default_address_id');
+        adminExtensionData.remove('id_card_encrypt');
+        adminExtensionData.remove('real_name');
+        adminExtensionData.remove('privacy_setting');
+
+        if (adminExtensionData.isNotEmpty) {
+          final updateResult = await db.update(
+            'admin_extensions',
+            adminExtensionData,
+            where: 'user_id = ?',
+            whereArgs: [userId],
+          );
+          debugPrint('更新管理员扩展表结果: $updateResult');
+          
+          // 如果没有记录被更新，说明扩展表中不存在对应的用户记录，需要插入一条新记录
+          if (updateResult == 0) {
+            adminExtensionData['user_id'] = userId;
+            await db.insert('admin_extensions', adminExtensionData);
+            debugPrint('插入管理员扩展表记录成功');
+          }
         }
       }
     }
@@ -555,92 +792,214 @@ class UserDatabaseService {
     return await db.query('users', where: 'delete_flag = 0');
   }
   
-  /// 根据邮箱查找用户
+  /// 根据邮箱查找用户（不区分大小写）
+  /// 
+  /// 支持从买家扩展表、商家扩展表和管理员扩展表中查询用户
+  /// 支持多重身份，返回完整的用户信息
+  /// 
+  /// [email] 用户邮箱地址
+  /// 返回用户信息Map，如果未找到返回null
   Future<Map<String, dynamic>?> getUserByEmail(String email) async {
     final db = await database;
+    final lowerEmail = email.toLowerCase();
     
     // 首先查找买家扩展表
     final buyerResult = await db.query(
       'buyer_extensions',
-      where: 'email = ?',
-      whereArgs: [email],
+      where: 'LOWER(email) = ?',
+      whereArgs: [lowerEmail],
       limit: 1,
     );
     
     if (buyerResult.isNotEmpty) {
       final buyerData = Map<String, dynamic>.from(buyerResult.first);
       final userId = buyerData['user_id'];
-      
-      // 获取用户主表信息
-      final userResult = await db.query(
-        'users',
-        where: 'user_id = ?',
-        whereArgs: [userId],
-        limit: 1,
-      );
-      
-      if (userResult.isNotEmpty) {
-        final userData = Map<String, dynamic>.from(userResult.first);
-        userData.addAll(buyerData);
-        return userData;
-      }
+      return await getUserById(userId);
     }
     
     // 然后查找商家扩展表
     final sellerResult = await db.query(
       'seller_extensions',
-      where: 'email = ?',
-      whereArgs: [email],
+      where: 'LOWER(email) = ?',
+      whereArgs: [lowerEmail],
       limit: 1,
     );
     
     if (sellerResult.isNotEmpty) {
       final sellerData = Map<String, dynamic>.from(sellerResult.first);
       final userId = sellerData['user_id'];
-      
-      // 获取用户主表信息
-      final userResult = await db.query(
-        'users',
-        where: 'user_id = ?',
-        whereArgs: [userId],
-        limit: 1,
-      );
-      
-      if (userResult.isNotEmpty) {
-        final userData = Map<String, dynamic>.from(userResult.first);
-        userData.addAll(sellerData);
-        return userData;
-      }
+      return await getUserById(userId);
     }
     
     // 最后查找管理员扩展表
     final adminResult = await db.query(
       'admin_extensions',
-      where: 'enterprise_email = ?',
-      whereArgs: [email],
+      where: 'LOWER(enterprise_email) = ?',
+      whereArgs: [lowerEmail],
       limit: 1,
     );
     
     if (adminResult.isNotEmpty) {
       final adminData = Map<String, dynamic>.from(adminResult.first);
       final userId = adminData['user_id'];
-      
-      // 获取用户主表信息
-      final userResult = await db.query(
-        'users',
-        where: 'user_id = ?',
-        whereArgs: [userId],
-        limit: 1,
-      );
-      
-      if (userResult.isNotEmpty) {
-        final userData = Map<String, dynamic>.from(userResult.first);
-        userData.addAll(adminData);
-        return userData;
-      }
+      return await getUserById(userId);
     }
     
     return null;
+  }
+
+  // ==========================================
+  // 多重身份检查方法
+  // ==========================================
+
+  /// 检查用户是否是买家
+  Future<bool> isBuyer(String userId) async {
+    final userData = await getUserById(userId);
+    if (userData == null) return false;
+    final userType = userData['user_type'] as int;
+    return (userType & userTypeBuyer) != 0;
+  }
+
+  /// 检查用户是否是商家
+  Future<bool> isSeller(String userId) async {
+    final userData = await getUserById(userId);
+    if (userData == null) return false;
+    final userType = userData['user_type'] as int;
+    return (userType & userTypeSeller) != 0;
+  }
+
+  /// 检查用户是否是管理员
+  Future<bool> isAdmin(String userId) async {
+    final userData = await getUserById(userId);
+    if (userData == null) return false;
+    final userType = userData['user_type'] as int;
+    return (userType & userTypeAdmin) != 0;
+  }
+
+  /// 为用户添加身份（不删除现有身份）
+  Future<void> addUserRole(String userId, int role) async {
+    final db = await database;
+    final userResult = await db.query(
+      'users',
+      columns: ['user_type'],
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (userResult.isNotEmpty) {
+      final currentType = userResult.first['user_type'] as int;
+      final newType = currentType | role;
+      await db.update(
+        'users',
+        {'user_type': newType, 'update_time': DateTime.now().toIso8601String()},
+        where: 'user_id = ?',
+        whereArgs: [userId],
+      );
+    }
+  }
+
+  /// 移除用户的某个身份
+  Future<void> removeUserRole(String userId, int role) async {
+    final db = await database;
+    final userResult = await db.query(
+      'users',
+      columns: ['user_type'],
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (userResult.isNotEmpty) {
+      final currentType = userResult.first['user_type'] as int;
+      final newType = currentType & ~role;
+      await db.update(
+        'users',
+        {'user_type': newType, 'update_time': DateTime.now().toIso8601String()},
+        where: 'user_id = ?',
+        whereArgs: [userId],
+      );
+    }
+  }
+
+  /// 获取用户的所有身份
+  Future<List<String>> getUserRoles(String userId) async {
+    final userData = await getUserById(userId);
+    if (userData == null) return [];
+    final userType = userData['user_type'] as int;
+    final roles = <String>[];
+    if ((userType & userTypeBuyer) != 0) roles.add('买家');
+    if ((userType & userTypeSeller) != 0) roles.add('商家');
+    if ((userType & userTypeAdmin) != 0) roles.add('管理员');
+    return roles;
+  }
+
+  // ==========================================
+  // 买家信用积分操作方法
+  // ==========================================
+
+  /// 获取买家信用积分
+  Future<BuyerCreditScore?> getBuyerCreditScore(String userId) async {
+    final db = await database;
+    final result = await db.query(
+      'buyer_credit_scores',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (result.isNotEmpty) {
+      return BuyerCreditScore.fromMap(result.first);
+    }
+    return null;
+  }
+
+  /// 创建或更新买家信用积分
+  Future<int> saveBuyerCreditScore(BuyerCreditScore creditScore) async {
+    final db = await database;
+    final existing = await getBuyerCreditScore(creditScore.userId);
+    if (existing == null) {
+      return await db.insert('buyer_credit_scores', creditScore.toMap());
+    } else {
+      return await db.update(
+        'buyer_credit_scores',
+        creditScore.toMap(),
+        where: 'user_id = ?',
+        whereArgs: [creditScore.userId],
+      );
+    }
+  }
+
+  // ==========================================
+  // 卖家信用积分操作方法
+  // ==========================================
+
+  /// 获取卖家信用积分
+  Future<SellerCreditScore?> getSellerCreditScore(String userId) async {
+    final db = await database;
+    final result = await db.query(
+      'seller_credit_scores',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (result.isNotEmpty) {
+      return SellerCreditScore.fromMap(result.first);
+    }
+    return null;
+  }
+
+  /// 创建或更新卖家信用积分
+  Future<int> saveSellerCreditScore(SellerCreditScore creditScore) async {
+    final db = await database;
+    final existing = await getSellerCreditScore(creditScore.userId);
+    if (existing == null) {
+      return await db.insert('seller_credit_scores', creditScore.toMap());
+    } else {
+      return await db.update(
+        'seller_credit_scores',
+        creditScore.toMap(),
+        where: 'user_id = ?',
+        whereArgs: [creditScore.userId],
+      );
+    }
   }
 }
 
@@ -683,7 +1042,7 @@ class _MockDatabaseForWeb {
   }
 
   Future<List<Map<String, dynamic>>> query(String table, {
-    String? columns,
+    List<String>? columns,
     String? where,
     List<Object?>? whereArgs,
     String? groupBy,
@@ -706,6 +1065,19 @@ class _MockDatabaseForWeb {
           return row[fieldName] == whereArgs[0];
         }
         return true;
+      }).toList();
+    }
+
+    // 如果指定了列，只返回指定的列
+    if (columns != null && columns.isNotEmpty) {
+      rows = rows.map((row) {
+        final filteredRow = <String, dynamic>{};
+        for (final column in columns) {
+          if (row.containsKey(column)) {
+            filteredRow[column] = row[column];
+          }
+        }
+        return filteredRow;
       }).toList();
     }
 

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 /// 倒计时与提醒服务
@@ -26,11 +25,11 @@ class CountdownService {
     }
 
     // Android 通知设置
-    const AndroidInitializationSettings androidInitializationSettings =
+    const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
 
     // iOS 通知设置
-    const DarwinInitializationSettings iosInitializationSettings =
+    const DarwinInitializationSettings initializationSettingsIOS =
         DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
@@ -40,32 +39,16 @@ class CountdownService {
     // 初始化设置
     const InitializationSettings initializationSettings =
         InitializationSettings(
-      android: androidInitializationSettings,
-      iOS: iosInitializationSettings,
+      android: initializationSettingsAndroid,
+      iOS: initializationSettingsIOS,
     );
 
     // 初始化通知插件
     await _flutterLocalNotificationsPlugin.initialize(
-      initializationSettings,
-      onDidReceiveNotificationResponse: _onDidReceiveNotificationResponse,
-      onDidReceiveBackgroundNotificationResponse:
-          _onDidReceiveBackgroundNotificationResponse,
+      settings: initializationSettings,
     );
 
     _isInitialized = true;
-  }
-
-  /// 前台通知响应处理
-  void _onDidReceiveNotificationResponse(
-      NotificationResponse notificationResponse) async {
-    print('Notification clicked: ${notificationResponse.payload}');
-    // 可以在这里处理通知点击事件，例如导航到特定页面
-  }
-
-  /// 后台通知响应处理
-  static void _onDidReceiveBackgroundNotificationResponse(
-      NotificationResponse notificationResponse) async {
-    print('Background notification clicked: ${notificationResponse.payload}');
   }
 
   /// 显示即时通知
@@ -106,10 +89,10 @@ class CountdownService {
 
     // 显示通知
     await _flutterLocalNotificationsPlugin.show(
-      id,
-      title,
-      body,
-      notificationDetails,
+      id: id,
+      title: title,
+      body: body,
+      notificationDetails: notificationDetails,
       payload: payload,
     );
   }
@@ -155,17 +138,17 @@ class CountdownService {
     // 简化实现：直接显示通知，不使用定时功能
     // 注意：完整的定时功能需要使用timezone包，这里为了简化暂时移除
     await _flutterLocalNotificationsPlugin.show(
-      id,
-      title,
-      body,
-      notificationDetails,
+      id: id,
+      title: title,
+      body: body,
+      notificationDetails: notificationDetails,
       payload: payload,
     );
   }
 
   /// 取消特定通知
   Future<void> cancelNotification(int id) async {
-    await _flutterLocalNotificationsPlugin.cancel(id);
+    await _flutterLocalNotificationsPlugin.cancel(id: id);
   }
 
   /// 取消所有通知

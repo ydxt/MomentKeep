@@ -1,3 +1,5 @@
+
+
 class StarCategory {
   final int? id;
   final String name;
@@ -236,6 +238,7 @@ class StarProduct {
   final int costPrice; // 成本价
   final int stock;
   final int categoryId;
+  final int? merchantId; // 商家ID
   final String? brand; // 品牌
   final List<String> tags; // 商品标签
   final String? categoryPath; // 分类路径，如 "1>2>3"
@@ -296,6 +299,7 @@ class StarProduct {
     required this.costPrice,
     required this.stock,
     required this.categoryId,
+    this.merchantId,
     this.brand,
     this.tags = const [],
     this.categoryPath,
@@ -358,6 +362,7 @@ class StarProduct {
       'cost_price': costPrice,
       'stock': stock,
       'category_id': categoryId,
+      'merchant_id': merchantId,
       'brand': brand,
       'tags': tags.join(','),
       'category_path': categoryPath,
@@ -419,6 +424,7 @@ class StarProduct {
       costPrice: map['cost_price'] ?? 0,
       stock: map['stock'],
       categoryId: map['category_id'],
+      merchantId: map['merchant_id'],
       brand: map['brand'],
       tags: map['tags'] != null ? (map['tags'] as String).split(',') : [],
       categoryPath: map['category_path'],
@@ -565,6 +571,1011 @@ class BillItem {
       createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
       updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
       relatedId: map['related_id'],
+    );
+  }
+}
+
+// ==========================================
+// 优惠券相关实体
+// ==========================================
+
+/// 优惠券实体类
+class Coupon {
+  final int? id;
+  final String name;
+  final String code;
+  final String type; // 'fixed' 固定金额, 'percentage' 百分比, 'shipping' 免邮
+  final int? value; // 优惠值（固定金额或百分比）
+  final int? minAmount; // 最低使用金额
+  final int? maxDiscount; // 最大优惠金额
+  final int totalCount; // 总数量
+  final int usedCount; // 已使用数量
+  final DateTime? startTime; // 开始时间
+  final DateTime? endTime; // 结束时间
+  final int? validDays; // 有效天数（领取后计算）
+  final List<int>? categoryIds; // 适用分类ID列表
+  final List<int>? productIds; // 适用商品ID列表
+  final bool isActive;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  Coupon({
+    this.id,
+    required this.name,
+    required this.code,
+    required this.type,
+    this.value,
+    this.minAmount,
+    this.maxDiscount,
+    required this.totalCount,
+    this.usedCount = 0,
+    this.startTime,
+    this.endTime,
+    this.validDays,
+    this.categoryIds,
+    this.productIds,
+    this.isActive = true,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'code': code,
+      'type': type,
+      'value': value,
+      'min_amount': minAmount,
+      'max_discount': maxDiscount,
+      'total_count': totalCount,
+      'used_count': usedCount,
+      'start_time': startTime?.millisecondsSinceEpoch,
+      'end_time': endTime?.millisecondsSinceEpoch,
+      'valid_days': validDays,
+      'category_ids': categoryIds?.join(','),
+      'product_ids': productIds?.join(','),
+      'is_active': isActive ? 1 : 0,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory Coupon.fromMap(Map<String, dynamic> map) {
+    return Coupon(
+      id: map['id'],
+      name: map['name'],
+      code: map['code'],
+      type: map['type'],
+      value: map['value'],
+      minAmount: map['min_amount'],
+      maxDiscount: map['max_discount'],
+      totalCount: map['total_count'],
+      usedCount: map['used_count'] ?? 0,
+      startTime: map['start_time'] != null ? DateTime.fromMillisecondsSinceEpoch(map['start_time']) : null,
+      endTime: map['end_time'] != null ? DateTime.fromMillisecondsSinceEpoch(map['end_time']) : null,
+      validDays: map['valid_days'],
+      categoryIds: map['category_ids'] != null ? (map['category_ids'] as String).split(',').map(int.parse).toList() : null,
+      productIds: map['product_ids'] != null ? (map['product_ids'] as String).split(',').map(int.parse).toList() : null,
+      isActive: map['is_active'] == 1,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+/// 用户优惠券实体类
+class UserCoupon {
+  final int? id;
+  final String userId;
+  final int couponId;
+  final String? orderId; // 使用的订单ID
+  final DateTime? usedAt; // 使用时间
+  final DateTime createdAt;
+  final DateTime? expiresAt; // 过期时间
+  final String status; // 'unused' 未使用, 'used' 已使用, 'expired' 已过期
+
+  UserCoupon({
+    this.id,
+    required this.userId,
+    required this.couponId,
+    this.orderId,
+    this.usedAt,
+    required this.createdAt,
+    this.expiresAt,
+    this.status = 'unused',
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'user_id': userId,
+      'coupon_id': couponId,
+      'order_id': orderId,
+      'used_at': usedAt?.millisecondsSinceEpoch,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'expires_at': expiresAt?.millisecondsSinceEpoch,
+      'status': status,
+    };
+  }
+
+  factory UserCoupon.fromMap(Map<String, dynamic> map) {
+    return UserCoupon(
+      id: map['id'],
+      userId: map['user_id'],
+      couponId: map['coupon_id'],
+      orderId: map['order_id'],
+      usedAt: map['used_at'] != null ? DateTime.fromMillisecondsSinceEpoch(map['used_at']) : null,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      expiresAt: map['expires_at'] != null ? DateTime.fromMillisecondsSinceEpoch(map['expires_at']) : null,
+      status: map['status'] ?? 'unused',
+    );
+  }
+}
+
+// ==========================================
+// 红包相关实体
+// ==========================================
+
+/// 红包实体类
+class RedPacket {
+  final int? id;
+  final String name;
+  final String type; // 'random' 随机, 'fixed' 固定
+  final int totalAmount;
+  final int totalCount;
+  final int receivedCount;
+  final int? minAmount;
+  final int? maxAmount;
+  final DateTime? startTime;
+  final DateTime? endTime;
+  final String? description;
+  final bool isActive;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  RedPacket({
+    this.id,
+    required this.name,
+    required this.type,
+    required this.totalAmount,
+    required this.totalCount,
+    this.receivedCount = 0,
+    this.minAmount,
+    this.maxAmount,
+    this.startTime,
+    this.endTime,
+    this.description,
+    this.isActive = true,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'type': type,
+      'total_amount': totalAmount,
+      'total_count': totalCount,
+      'received_count': receivedCount,
+      'min_amount': minAmount,
+      'max_amount': maxAmount,
+      'start_time': startTime?.millisecondsSinceEpoch,
+      'end_time': endTime?.millisecondsSinceEpoch,
+      'description': description,
+      'is_active': isActive ? 1 : 0,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory RedPacket.fromMap(Map<String, dynamic> map) {
+    return RedPacket(
+      id: map['id'],
+      name: map['name'],
+      type: map['type'],
+      totalAmount: map['total_amount'],
+      totalCount: map['total_count'],
+      receivedCount: map['received_count'] ?? 0,
+      minAmount: map['min_amount'],
+      maxAmount: map['max_amount'],
+      startTime: map['start_time'] != null ? DateTime.fromMillisecondsSinceEpoch(map['start_time']) : null,
+      endTime: map['end_time'] != null ? DateTime.fromMillisecondsSinceEpoch(map['end_time']) : null,
+      description: map['description'],
+      isActive: map['is_active'] == 1,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+/// 红包领取记录实体类
+class RedPacketClaim {
+  final int? id;
+  final int redPacketId;
+  final String userId;
+  final int amount;
+  final DateTime claimedAt;
+
+  RedPacketClaim({
+    this.id,
+    required this.redPacketId,
+    required this.userId,
+    required this.amount,
+    required this.claimedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'red_packet_id': redPacketId,
+      'user_id': userId,
+      'amount': amount,
+      'claimed_at': claimedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory RedPacketClaim.fromMap(Map<String, dynamic> map) {
+    return RedPacketClaim(
+      id: map['id'],
+      redPacketId: map['red_packet_id'],
+      userId: map['user_id'],
+      amount: map['amount'],
+      claimedAt: DateTime.fromMillisecondsSinceEpoch(map['claimed_at']),
+    );
+  }
+}
+
+// ==========================================
+// 购物卡相关实体
+// ==========================================
+
+/// 购物卡实体类
+class ShoppingCard {
+  final int? id;
+  final String cardNo;
+  final String name;
+  final int totalAmount;
+  final int balance;
+  final String? password;
+  final DateTime? validFrom;
+  final DateTime? validTo;
+  final String status; // 'active' 可用, 'used' 已用完, 'expired' 已过期, 'inactive' 未激活
+  final DateTime? activatedAt;
+  final String? userId; // 绑定的用户ID
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  ShoppingCard({
+    this.id,
+    required this.cardNo,
+    required this.name,
+    required this.totalAmount,
+    required this.balance,
+    this.password,
+    this.validFrom,
+    this.validTo,
+    this.status = 'inactive',
+    this.activatedAt,
+    this.userId,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'card_no': cardNo,
+      'name': name,
+      'total_amount': totalAmount,
+      'balance': balance,
+      'password': password,
+      'valid_from': validFrom?.millisecondsSinceEpoch,
+      'valid_to': validTo?.millisecondsSinceEpoch,
+      'status': status,
+      'activated_at': activatedAt?.millisecondsSinceEpoch,
+      'user_id': userId,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory ShoppingCard.fromMap(Map<String, dynamic> map) {
+    return ShoppingCard(
+      id: map['id'],
+      cardNo: map['card_no'],
+      name: map['name'],
+      totalAmount: map['total_amount'],
+      balance: map['balance'],
+      password: map['password'],
+      validFrom: map['valid_from'] != null ? DateTime.fromMillisecondsSinceEpoch(map['valid_from']) : null,
+      validTo: map['valid_to'] != null ? DateTime.fromMillisecondsSinceEpoch(map['valid_to']) : null,
+      status: map['status'] ?? 'inactive',
+      activatedAt: map['activated_at'] != null ? DateTime.fromMillisecondsSinceEpoch(map['activated_at']) : null,
+      userId: map['user_id'],
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+/// 购物卡交易记录实体类
+class ShoppingCardTransaction {
+  final int? id;
+  final int shoppingCardId;
+  final String? orderId;
+  final int amount;
+  final String type; // 'consume' 消费, 'recharge' 充值, 'refund' 退款
+  final int balanceBefore;
+  final int balanceAfter;
+  final String? description;
+  final DateTime createdAt;
+
+  ShoppingCardTransaction({
+    this.id,
+    required this.shoppingCardId,
+    this.orderId,
+    required this.amount,
+    required this.type,
+    required this.balanceBefore,
+    required this.balanceAfter,
+    this.description,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'shopping_card_id': shoppingCardId,
+      'order_id': orderId,
+      'amount': amount,
+      'type': type,
+      'balance_before': balanceBefore,
+      'balance_after': balanceAfter,
+      'description': description,
+      'created_at': createdAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory ShoppingCardTransaction.fromMap(Map<String, dynamic> map) {
+    return ShoppingCardTransaction(
+      id: map['id'],
+      shoppingCardId: map['shopping_card_id'],
+      orderId: map['order_id'],
+      amount: map['amount'],
+      type: map['type'],
+      balanceBefore: map['balance_before'],
+      balanceAfter: map['balance_after'],
+      description: map['description'],
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+    );
+  }
+}
+
+// ==========================================
+// 地址相关实体
+// ==========================================
+
+/// 地址实体类
+class Address {
+  final int? id;
+  final String userId;
+  final String name;
+  final String phone;
+  final String province;
+  final String city;
+  final String district;
+  final String detail;
+  final String? postalCode;
+  final bool isDefault;
+  final String? tag; // 'home' 家, 'company' 公司, 'other' 其他
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  Address({
+    this.id,
+    required this.userId,
+    required this.name,
+    required this.phone,
+    required this.province,
+    required this.city,
+    required this.district,
+    required this.detail,
+    this.postalCode,
+    this.isDefault = false,
+    this.tag,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  String get fullAddress => '$province$city$district$detail';
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'user_id': userId,
+      'name': name,
+      'phone': phone,
+      'province': province,
+      'city': city,
+      'district': district,
+      'detail': detail,
+      'postal_code': postalCode,
+      'is_default': isDefault ? 1 : 0,
+      'tag': tag,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory Address.fromMap(Map<String, dynamic> map) {
+    return Address(
+      id: map['id'],
+      userId: map['user_id'],
+      name: map['name'],
+      phone: map['phone'],
+      province: map['province'],
+      city: map['city'],
+      district: map['district'],
+      detail: map['detail'],
+      postalCode: map['postal_code'],
+      isDefault: map['is_default'] == 1,
+      tag: map['tag'],
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+// ==========================================
+// 会员等级相关实体
+// ==========================================
+
+/// 会员等级实体类
+class MemberLevel {
+  final int? id;
+  final String name;
+  final int minPoints; // 最低积分要求
+  final double discount; // 折扣（0.0-1.0）
+  final int pointsBonus; // 积分加成比例（%）
+  final String? icon;
+  final String? privileges; // 权益描述
+  final int sortOrder;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  MemberLevel({
+    this.id,
+    required this.name,
+    required this.minPoints,
+    this.discount = 1.0,
+    this.pointsBonus = 0,
+    this.icon,
+    this.privileges,
+    this.sortOrder = 0,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'min_points': minPoints,
+      'discount': discount,
+      'points_bonus': pointsBonus,
+      'icon': icon,
+      'privileges': privileges,
+      'sort_order': sortOrder,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory MemberLevel.fromMap(Map<String, dynamic> map) {
+    return MemberLevel(
+      id: map['id'],
+      name: map['name'],
+      minPoints: map['min_points'],
+      discount: (map['discount'] as num).toDouble(),
+      pointsBonus: map['points_bonus'] ?? 0,
+      icon: map['icon'],
+      privileges: map['privileges'],
+      sortOrder: map['sort_order'] ?? 0,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+// ==========================================
+// 物流相关实体
+// ==========================================
+
+/// 物流公司实体类
+class LogisticsCompany {
+  final int? id;
+  final String name;
+  final String code;
+  final String? website;
+  final String? phone;
+  final bool isActive;
+  final int sortOrder;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  LogisticsCompany({
+    this.id,
+    required this.name,
+    required this.code,
+    this.website,
+    this.phone,
+    this.isActive = true,
+    this.sortOrder = 0,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'code': code,
+      'website': website,
+      'phone': phone,
+      'is_active': isActive ? 1 : 0,
+      'sort_order': sortOrder,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory LogisticsCompany.fromMap(Map<String, dynamic> map) {
+    return LogisticsCompany(
+      id: map['id'],
+      name: map['name'],
+      code: map['code'],
+      website: map['website'],
+      phone: map['phone'],
+      isActive: map['is_active'] == 1,
+      sortOrder: map['sort_order'] ?? 0,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+/// 物流跟踪记录实体类
+class LogisticsTrack {
+  final int? id;
+  final String orderId;
+  final int? logisticsCompanyId;
+  final String? trackingNumber;
+  final String status; // 'created' 已创建, 'picked' 已揽收, 'transporting' 运输中, 'delivering' 派送中, 'delivered' 已签收, 'exception' 异常
+  final String description;
+  final String? location;
+  final DateTime trackTime;
+  final DateTime createdAt;
+
+  LogisticsTrack({
+    this.id,
+    required this.orderId,
+    this.logisticsCompanyId,
+    this.trackingNumber,
+    required this.status,
+    required this.description,
+    this.location,
+    required this.trackTime,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'order_id': orderId,
+      'logistics_company_id': logisticsCompanyId,
+      'tracking_number': trackingNumber,
+      'status': status,
+      'description': description,
+      'location': location,
+      'track_time': trackTime.millisecondsSinceEpoch,
+      'created_at': createdAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory LogisticsTrack.fromMap(Map<String, dynamic> map) {
+    return LogisticsTrack(
+      id: map['id'],
+      orderId: map['order_id'],
+      logisticsCompanyId: map['logistics_company_id'],
+      trackingNumber: map['tracking_number'],
+      status: map['status'],
+      description: map['description'],
+      location: map['location'],
+      trackTime: DateTime.fromMillisecondsSinceEpoch(map['track_time']),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+    );
+  }
+}
+
+// ==========================================
+// 支付记录相关实体
+// ==========================================
+
+/// 支付记录实体类
+class PaymentRecord {
+  final int? id;
+  final String orderId;
+  final String userId;
+  final String paymentNo; // 支付流水号
+  final int amount;
+  final int pointsUsed;
+  final int cashAmount;
+  final String paymentMethod; // 'cash' 现金, 'points' 积分, 'hybrid' 混合, 'shopping_card' 购物卡
+  final String? thirdPartyPaymentId; // 第三方支付ID
+  final String status; // 'pending' 待支付, 'success' 支付成功, 'failed' 支付失败, 'refunded' 已退款
+  final DateTime? paidAt;
+  final DateTime? refundedAt;
+  final String? failureReason;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  PaymentRecord({
+    this.id,
+    required this.orderId,
+    required this.userId,
+    required this.paymentNo,
+    required this.amount,
+    this.pointsUsed = 0,
+    this.cashAmount = 0,
+    required this.paymentMethod,
+    this.thirdPartyPaymentId,
+    this.status = 'pending',
+    this.paidAt,
+    this.refundedAt,
+    this.failureReason,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'order_id': orderId,
+      'user_id': userId,
+      'payment_no': paymentNo,
+      'amount': amount,
+      'points_used': pointsUsed,
+      'cash_amount': cashAmount,
+      'payment_method': paymentMethod,
+      'third_party_payment_id': thirdPartyPaymentId,
+      'status': status,
+      'paid_at': paidAt?.millisecondsSinceEpoch,
+      'refunded_at': refundedAt?.millisecondsSinceEpoch,
+      'failure_reason': failureReason,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory PaymentRecord.fromMap(Map<String, dynamic> map) {
+    return PaymentRecord(
+      id: map['id'],
+      orderId: map['order_id'],
+      userId: map['user_id'],
+      paymentNo: map['payment_no'],
+      amount: map['amount'],
+      pointsUsed: map['points_used'] ?? 0,
+      cashAmount: map['cash_amount'] ?? 0,
+      paymentMethod: map['payment_method'],
+      thirdPartyPaymentId: map['third_party_payment_id'],
+      status: map['status'] ?? 'pending',
+      paidAt: map['paid_at'] != null ? DateTime.fromMillisecondsSinceEpoch(map['paid_at']) : null,
+      refundedAt: map['refunded_at'] != null ? DateTime.fromMillisecondsSinceEpoch(map['refunded_at']) : null,
+      failureReason: map['failure_reason'],
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+// ==========================================
+// 库存记录相关实体
+// ==========================================
+
+/// 库存变动记录实体类
+class StockRecord {
+  final int? id;
+  final int productId;
+  final int? skuId;
+  final String type; // 'in' 入库, 'out' 出库, 'adjust' 调整, 'order' 订单占用, 'return' 退货
+  final int quantity;
+  final int stockBefore;
+  final int stockAfter;
+  final String? relatedId; // 关联ID（订单ID、入库单ID等）
+  final String? remark;
+  final String operatorId;
+  final DateTime createdAt;
+
+  StockRecord({
+    this.id,
+    required this.productId,
+    this.skuId,
+    required this.type,
+    required this.quantity,
+    required this.stockBefore,
+    required this.stockAfter,
+    this.relatedId,
+    this.remark,
+    required this.operatorId,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'product_id': productId,
+      'sku_id': skuId,
+      'type': type,
+      'quantity': quantity,
+      'stock_before': stockBefore,
+      'stock_after': stockAfter,
+      'related_id': relatedId,
+      'remark': remark,
+      'operator_id': operatorId,
+      'created_at': createdAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory StockRecord.fromMap(Map<String, dynamic> map) {
+    return StockRecord(
+      id: map['id'],
+      productId: map['product_id'],
+      skuId: map['sku_id'],
+      type: map['type'],
+      quantity: map['quantity'],
+      stockBefore: map['stock_before'],
+      stockAfter: map['stock_after'],
+      relatedId: map['related_id'],
+      remark: map['remark'],
+      operatorId: map['operator_id'],
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+    );
+  }
+}
+
+// ==========================================
+// 商家相关实体
+// ==========================================
+
+/// 商家实体类
+class Merchant {
+  final int? id;
+  final String userId;
+  final String name;
+  final String? logo;
+  final String? description;
+  final String? phone;
+  final String? email;
+  final String? address;
+  final String status; // 'pending' 待审核, 'active' 正常营业, 'suspended' 已暂停, 'rejected' 已拒绝
+  final double rating;
+  final int totalSales;
+  final DateTime? approvedAt;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  Merchant({
+    this.id,
+    required this.userId,
+    required this.name,
+    this.logo,
+    this.description,
+    this.phone,
+    this.email,
+    this.address,
+    this.status = 'pending',
+    this.rating = 0.0,
+    this.totalSales = 0,
+    this.approvedAt,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'user_id': userId,
+      'name': name,
+      'logo': logo,
+      'description': description,
+      'phone': phone,
+      'email': email,
+      'address': address,
+      'status': status,
+      'rating': rating,
+      'total_sales': totalSales,
+      'approved_at': approvedAt?.millisecondsSinceEpoch,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory Merchant.fromMap(Map<String, dynamic> map) {
+    return Merchant(
+      id: map['id'],
+      userId: map['user_id'],
+      name: map['name'],
+      logo: map['logo'],
+      description: map['description'],
+      phone: map['phone'],
+      email: map['email'],
+      address: map['address'],
+      status: map['status'] ?? 'pending',
+      rating: (map['rating'] as num).toDouble(),
+      totalSales: map['total_sales'] ?? 0,
+      approvedAt: map['approved_at'] != null ? DateTime.fromMillisecondsSinceEpoch(map['approved_at']) : null,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+// ==========================================
+// 买家信用积分相关实体
+// ==========================================
+
+/// 买家信用积分实体类
+class BuyerCreditScore {
+  final String userId;
+  final int creditScore;
+  final String creditLevel;
+  final int totalOrders;
+  final int completedOrders;
+  final double refundRate;
+  final double onTimeRate;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  BuyerCreditScore({
+    required this.userId,
+    this.creditScore = 100,
+    this.creditLevel = '良好',
+    this.totalOrders = 0,
+    this.completedOrders = 0,
+    this.refundRate = 0.0,
+    this.onTimeRate = 100.0,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'user_id': userId,
+      'credit_score': creditScore,
+      'credit_level': creditLevel,
+      'total_orders': totalOrders,
+      'completed_orders': completedOrders,
+      'refund_rate': refundRate,
+      'on_time_rate': onTimeRate,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory BuyerCreditScore.fromMap(Map<String, dynamic> map) {
+    return BuyerCreditScore(
+      userId: map['user_id'],
+      creditScore: map['credit_score'] ?? 100,
+      creditLevel: map['credit_level'] ?? '良好',
+      totalOrders: map['total_orders'] ?? 0,
+      completedOrders: map['completed_orders'] ?? 0,
+      refundRate: (map['refund_rate'] as num).toDouble(),
+      onTimeRate: (map['on_time_rate'] as num).toDouble(),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
+    );
+  }
+}
+
+// ==========================================
+// 积分统计相关实体
+// ==========================================
+
+/// 趋势数据点
+class TrendDataPoint {
+  final DateTime date;
+  final double income;
+  final double expense;
+
+  TrendDataPoint({
+    required this.date,
+    required this.income,
+    required this.expense,
+  });
+}
+
+/// 积分统计数据
+class PointsStatistics {
+  final double totalIncome;
+  final double totalExpense;
+  final double netIncome;
+  final int transactionCount;
+  final List<TrendDataPoint> trendData;
+  final Map<String, double> typeDistribution;
+  final Map<String, double> incomeTypeDistribution;
+  final Map<String, double> expenseTypeDistribution;
+
+  PointsStatistics({
+    required this.totalIncome,
+    required this.totalExpense,
+    required this.netIncome,
+    required this.transactionCount,
+    required this.trendData,
+    required this.typeDistribution,
+    required this.incomeTypeDistribution,
+    required this.expenseTypeDistribution,
+  });
+}
+
+// ==========================================
+// 卖家信用积分相关实体
+// ==========================================
+
+/// 卖家信用积分实体类
+class SellerCreditScore {
+  final String userId;
+  final int creditScore;
+  final String creditLevel;
+  final int totalOrders;
+  final int completedOrders;
+  final double refundRate;
+  final double onTimeDeliveryRate;
+  final double averageRating;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  SellerCreditScore({
+    required this.userId,
+    this.creditScore = 100,
+    this.creditLevel = '良好',
+    this.totalOrders = 0,
+    this.completedOrders = 0,
+    this.refundRate = 0.0,
+    this.onTimeDeliveryRate = 100.0,
+    this.averageRating = 5.0,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'user_id': userId,
+      'credit_score': creditScore,
+      'credit_level': creditLevel,
+      'total_orders': totalOrders,
+      'completed_orders': completedOrders,
+      'refund_rate': refundRate,
+      'on_time_delivery_rate': onTimeDeliveryRate,
+      'average_rating': averageRating,
+      'created_at': createdAt.millisecondsSinceEpoch,
+      'updated_at': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  factory SellerCreditScore.fromMap(Map<String, dynamic> map) {
+    return SellerCreditScore(
+      userId: map['user_id'],
+      creditScore: map['credit_score'] ?? 100,
+      creditLevel: map['credit_level'] ?? '良好',
+      totalOrders: map['total_orders'] ?? 0,
+      completedOrders: map['completed_orders'] ?? 0,
+      refundRate: (map['refund_rate'] as num).toDouble(),
+      onTimeDeliveryRate: (map['on_time_delivery_rate'] as num).toDouble(),
+      averageRating: (map['average_rating'] as num).toDouble(),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at']),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at']),
     );
   }
 }

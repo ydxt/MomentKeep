@@ -69,6 +69,9 @@ class _ProductDetailPageState extends ConsumerState<ProductDetailPage> with Sing
   // 规格选择
   Map<String, String> _selectedSpecs = {}; // 存储选中的规格，如 {'颜色': '红色', '尺寸': 'L'}
   StarProductSku? _selectedSku; // 选中的SKU
+  
+  // 收藏状态
+  bool _isFavorited = false;
 
   @override
   void initState() {
@@ -506,16 +509,23 @@ class _ProductDetailPageState extends ConsumerState<ProductDetailPage> with Sing
             Row(
               children: [
                 _buildIconButton(
-                  icon: Icons.favorite_border,
+                  icon: _isFavorited ? Icons.favorite : Icons.favorite_border,
                   onPressed: () {
+                    setState(() {
+                      _isFavorited = !_isFavorited;
+                    });
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text('收藏功能开发中', style: TextStyle(color: theme.colorScheme.onSurface)),
-                        backgroundColor: theme.colorScheme.surfaceVariant,
+                        content: Text(
+                          _isFavorited ? '已添加到收藏' : '已取消收藏',
+                          style: TextStyle(color: theme.colorScheme.onPrimary),
+                        ),
+                        backgroundColor: theme.colorScheme.primary,
+                        duration: const Duration(seconds: 2),
                       ),
                     );
                   },
-                  color: theme.colorScheme.onSurface,
+                  color: _isFavorited ? theme.colorScheme.error : theme.colorScheme.onSurface,
                   backgroundColor: theme.colorScheme.surface.withOpacity(0.8),
                 ),
                 const SizedBox(width: 12),

@@ -4,7 +4,6 @@ import 'package:moment_keep/services/user_database_service.dart';
 Future<void> main() async {
   try {
     // 初始化数据库服务
-    final databaseService = DatabaseService();
     final userDatabaseService = UserDatabaseService();
     
     // 查找test@h.com账户
@@ -25,10 +24,10 @@ Future<void> main() async {
     
     // 充值10000积分
     print('正在充值10000积分...');
-    await databaseService.updateUserPoints(userId, 10000);
+    await DatabaseService.updateUserPoints(userId, 10000);
     
     // 验证积分是否充值成功
-    final newPoints = await databaseService.getUserPoints(userId);
+    final newPoints = await DatabaseService.getUserPoints(userId);
     print('充值成功！');
     print('新积分: $newPoints');
     print('积分增加了: ${newPoints - currentPoints}');

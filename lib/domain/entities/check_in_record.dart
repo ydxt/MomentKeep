@@ -18,12 +18,16 @@ class CheckInRecord extends Equatable {
   /// 打卡时间
   final DateTime timestamp;
 
+  /// 是否为负向打卡（扣分）
+  final bool isNegative;
+
   const CheckInRecord({
     required this.id,
     required this.habitId,
     required this.score,
     this.comment = const [],
     required this.timestamp,
+    this.isNegative = false,
   });
 
   /// 复制并修改
@@ -33,6 +37,7 @@ class CheckInRecord extends Equatable {
     int? score,
     List<ContentBlock>? comment,
     DateTime? timestamp,
+    bool? isNegative,
   }) {
     return CheckInRecord(
       id: id ?? this.id,
@@ -40,6 +45,7 @@ class CheckInRecord extends Equatable {
       score: score ?? this.score,
       comment: comment ?? this.comment,
       timestamp: timestamp ?? this.timestamp,
+      isNegative: isNegative ?? this.isNegative,
     );
   }
 
@@ -50,6 +56,7 @@ class CheckInRecord extends Equatable {
         score,
         comment,
         timestamp,
+        isNegative,
       ];
 
   /// 转换为JSON
@@ -60,6 +67,7 @@ class CheckInRecord extends Equatable {
       'score': score,
       'comment': comment.map((block) => block.toJson()).toList(),
       'timestamp': timestamp.toIso8601String(),
+      'isNegative': isNegative,
     };
   }
 
@@ -74,6 +82,7 @@ class CheckInRecord extends Equatable {
               ContentBlock.fromJson(blockJson as Map<String, dynamic>))
           .toList(),
       timestamp: DateTime.parse(json['timestamp']),
+      isNegative: json['isNegative'] ?? false,
     );
   }
 }

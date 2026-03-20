@@ -202,7 +202,7 @@ class DiaryBloc extends Bloc<DiaryEvent, DiaryState> {
         userId,
         pointsPerDiary.toDouble(),
         description: '完成日记: ${event.entry.title}',
-        transactionType: 'habit_completed',
+        transactionType: 'diary_completed',
         relatedId: event.entry.id,
       );
       

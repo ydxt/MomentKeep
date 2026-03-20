@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -40,6 +39,8 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
   DateTime? _editingBirthday;
   
   // 本地状态变量，用于非编辑模式显示
+  String _displayNickname = '';
+  String _displayEmail = '';
   String _displayRealName = '';
   String _displayPhone = '';
   String _displayGender = '';
@@ -59,6 +60,17 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
   
   // 用户扩展信息缓存
   Map<String, dynamic>? _userExtendedInfo;
+
+  // 用户身份列表
+  List<String> _userRoles = [];
+
+  // 买家信用积分
+  int? _buyerCreditScore;
+  String? _buyerCreditLevel;
+
+  // 卖家信用积分
+  int? _sellerCreditScore;
+  String? _sellerCreditLevel;
 
   // 数据库服务实例
   final DatabaseService _databaseService = DatabaseService();
@@ -178,6 +190,10 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
   // 从数据库加载用户扩展信息（会员等级、积分、优惠券、红包、购物卡）
   Future<void> _loadUserExtendedInfo(String userId) async {
     try {
+      // 首先修复积分不一致的问题
+      await _databaseService.fixHistoricalTransactionTypes(userId);
+      await _databaseService.recalculateAndFixPoints(userId);
+      
       final [memberLevel, points, couponCount, redPacketCount, shoppingCardCount] = await Future.wait([
         _getUserMemberLevel(userId),
         _getUserPoints(userId),
@@ -221,13 +237,67 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
       final userData = await userDatabase.getUserById(userId);
       
       if (userData != null) {
-        // 获取用户详情数据
-        final realName = userData['real_name'] as String? ?? '';
-        final phone = userData['phone'] as String? ?? '';
+        // 优先从扩展信息中获取数据，兼容多重身份
+        String nickname = '';
+        String email = '';
+        String realName = '';
+        String phone = '';
+        dynamic genderValue;
+        String? birthdayStr;
+        
+        // 检查是否有买家扩展信息
+        if (userData.containsKey('buyer_extension') && userData['buyer_extension'] != null) {
+          nickname = userData['buyer_extension']['nickname'] as String? ?? '';
+          email = userData['buyer_extension']['email'] as String? ?? '';
+          realName = userData['buyer_extension']['real_name'] as String? ?? '';
+          phone = userData['buyer_extension']['phone'] as String? ?? '';
+          genderValue = userData['buyer_extension']['gender'];
+          birthdayStr = userData['buyer_extension']['birthday'] as String?;
+        }
+        // 检查是否有商家扩展信息
+        else if (userData.containsKey('seller_extension') && userData['seller_extension'] != null) {
+          nickname = userData['seller_extension']['nickname'] as String? ?? '';
+          email = userData['seller_extension']['email'] as String? ?? '';
+          phone = userData['seller_extension']['phone'] as String? ?? '';
+        }
+        // 检查是否有管理员扩展信息
+        else if (userData.containsKey('admin_extension') && userData['admin_extension'] != null) {
+          nickname = userData['admin_extension']['real_name'] as String? ?? '';
+          email = userData['admin_extension']['enterprise_email'] as String? ?? '';
+        }
+        // 最后尝试从根级别获取（向后兼容）
+        else {
+          nickname = userData['nickname'] as String? ?? '';
+          email = userData['email'] as String? ?? '';
+          realName = userData['real_name'] as String? ?? '';
+          phone = userData['phone'] as String? ?? '';
+          genderValue = userData['gender'];
+          birthdayStr = userData['birthday'] as String?;
+        }
+        
+        debugPrint('从数据库加载的用户信息 - nickname: $nickname, email: $email');
+        
+        // 加载用户身份列表
+        final roles = await userDatabase.getUserRoles(userId);
+        
+        // 加载买家信用积分
+        final buyerCredit = await userDatabase.getBuyerCreditScore(userId);
+        
+        // 加载卖家信用积分
+        final sellerCredit = await userDatabase.getSellerCreditScore(userId);
         
         setState(() {
+          // 更新昵称和邮箱控制器以及显示变量
+          if (nickname.isNotEmpty) {
+            _usernameController.text = nickname;
+            _displayNickname = nickname;
+          }
+          if (email.isNotEmpty) {
+            _emailController.text = email;
+            _displayEmail = email;
+          }
+          
           // 处理性别字段，将整数转换为字符串
-          final genderValue = userData['gender'];
           String genderStr = '';
           if (genderValue is int) {
             genderStr = genderValue == 1 ? '男' : genderValue == 2 ? '女' : '';
@@ -237,7 +307,6 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
           _editingGender = genderStr;
           _displayGender = genderStr;
           
-          final birthdayStr = userData['birthday'] as String?;
           DateTime? birthday;
           if (birthdayStr != null && birthdayStr.isNotEmpty) {
             birthday = DateTime.tryParse(birthdayStr);
@@ -252,6 +321,13 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
           // 更新本地状态变量，用于非编辑模式显示
           _displayRealName = realName;
           _displayPhone = phone;
+          
+          // 更新用户身份和信用积分
+          _userRoles = roles;
+          _buyerCreditScore = buyerCredit?.creditScore;
+          _buyerCreditLevel = buyerCredit?.creditLevel;
+          _sellerCreditScore = sellerCredit?.creditScore;
+          _sellerCreditLevel = sellerCredit?.creditLevel;
         });
       }
       
@@ -269,13 +345,26 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
   @override
   Widget build(BuildContext context) {
     final theme = ref.watch(currentThemeProvider);
-    return BlocBuilder<SecurityBloc, SecurityState>(
+    return BlocConsumer<SecurityBloc, SecurityState>(
+      listener: (context, state) {
+        if (state is SecurityInitial) {
+          Navigator.pushNamedAndRemoveUntil(
+            context,
+            '/login',
+            (route) => false,
+          );
+        }
+      },
       builder: (context, state) {
         if (state is SecurityLoading) {
           return Scaffold(
             backgroundColor: theme.colorScheme.background,
             body: Center(child: CircularProgressIndicator(color: theme.colorScheme.primary)),
           );
+        }
+
+        if (state is SecurityInitial) {
+          return const Scaffold();
         }
 
         if (state is! SecurityLoaded) {
@@ -536,6 +625,134 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
+                          
+                          // 信用积分展示
+                          if (_buyerCreditScore != null || _sellerCreditScore != null) ...[
+                            const SizedBox(height: 16),
+                            Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: theme.colorScheme.outline.withOpacity(0.2),
+                                  width: 1,
+                                ),
+                              ),
+                              child: Column(
+                                children: [
+                                  Text(
+                                    '信用积分',
+                                    style: TextStyle(
+                                      color: theme.colorScheme.onSurface,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    children: [
+                                      // 买家信用积分
+                                      if (_buyerCreditScore != null)
+                                        Expanded(
+                                          child: Column(
+                                            children: [
+                                              Row(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  Icon(
+                                                    Icons.shopping_bag,
+                                                    size: 18,
+                                                    color: Colors.blue,
+                                                  ),
+                                                  const SizedBox(width: 4),
+                                                  Text(
+                                                    '买家',
+                                                    style: TextStyle(
+                                                      color: theme.colorScheme.onSurfaceVariant,
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                '$_buyerCreditScore',
+                                                style: TextStyle(
+                                                  color: Colors.blue,
+                                                  fontSize: 24,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              if (_buyerCreditLevel != null)
+                                                Text(
+                                                  _buyerCreditLevel!,
+                                                  style: TextStyle(
+                                                    color: theme.colorScheme.onSurfaceVariant,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                      
+                                      // 分隔线
+                                      if (_buyerCreditScore != null && _sellerCreditScore != null)
+                                        Container(
+                                          width: 1,
+                                          height: 48,
+                                          color: theme.colorScheme.outline.withOpacity(0.3),
+                                        ),
+                                      
+                                      // 卖家信用积分
+                                      if (_sellerCreditScore != null)
+                                        Expanded(
+                                          child: Column(
+                                            children: [
+                                              Row(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  Icon(
+                                                    Icons.store,
+                                                    size: 18,
+                                                    color: Colors.orange,
+                                                  ),
+                                                  const SizedBox(width: 4),
+                                                  Text(
+                                                    '卖家',
+                                                    style: TextStyle(
+                                                      color: theme.colorScheme.onSurfaceVariant,
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                '$_sellerCreditScore',
+                                                style: TextStyle(
+                                                  color: Colors.orange,
+                                                  fontSize: 24,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              if (_sellerCreditLevel != null)
+                                                Text(
+                                                  _sellerCreditLevel!,
+                                                  style: TextStyle(
+                                                    color: theme.colorScheme.onSurfaceVariant,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -548,7 +765,9 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
                           // 昵称
                           _buildInfoItem(
                             title: '昵称',
-                            value: _editingField == '昵称' ? _usernameController.text : userAuth.username,
+                            value: _editingField == '昵称' 
+                                ? _usernameController.text 
+                                : (_displayNickname.isEmpty ? userAuth.username : _displayNickname),
                             showArrow: false,
                             onTap: () {
                               setState(() {
@@ -629,7 +848,9 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
                           // 邮箱
                           _buildInfoItem(
                             title: '邮箱',
-                            value: _editingField == '邮箱' ? _emailController.text : userAuth.email,
+                            value: _editingField == '邮箱' 
+                                ? _emailController.text 
+                                : (_displayEmail.isEmpty ? userAuth.email : _displayEmail),
                             showArrow: false,
                             onTap: () {
                               setState(() {
@@ -1060,8 +1281,6 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
     }
     
     try {
-      final theme = Theme.of(context);
-      
       // 强制不使用 const，确保运行时动态加载
       return await ImageCropper().cropImage(
         sourcePath: imagePath,
@@ -1302,15 +1521,7 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
     );
   }
   
-  // 显示优惠券/红包明细
-  void _showCouponsDetail() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const CouponsDetailPage(),
-      ),
-    );
-  }
+
   
 
   
@@ -1401,72 +1612,7 @@ class _UserInfoPageState extends ConsumerState<UserInfoPage> {
     );
   }
   
-  // 验证表单
-  bool _validateForm() {
-    bool isValid = true;
-    
-    // 验证昵称
-    if (_usernameController.text.isEmpty) {
-      _showError('请输入昵称');
-      isValid = false;
-    } else if (_usernameController.text.length < 2 || _usernameController.text.length > 20) {
-      _showError('昵称长度必须在2-20个字符之间');
-      isValid = false;
-    }
-    
-    // 验证真实姓名（如果填写了）
-    if (_realNameController.text.isNotEmpty) {
-      if (_realNameController.text.length < 2 || _realNameController.text.length > 20) {
-        _showError('真实姓名长度必须在2-20个字符之间');
-        isValid = false;
-      } else if (!RegExp(r'^[\u4e00-\u9fa5a-zA-Z·]+$').hasMatch(_realNameController.text)) {
-        _showError('真实姓名只能包含中文、英文和点号');
-        isValid = false;
-      }
-    }
-    
-    // 验证邮箱
-    if (_emailController.text.isEmpty) {
-      _showError('请输入邮箱');
-      isValid = false;
-    } else if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(_emailController.text)) {
-      _showError('请输入有效的邮箱地址');
-      isValid = false;
-    }
-    
-    // 验证手机号（如果填写了）
-    if (_phoneController.text.isNotEmpty) {
-      if (_phoneController.text.length != 11) {
-        _showError('手机号必须为11位数字');
-        isValid = false;
-      } else if (!RegExp(r'^1[3-9]\d{9}$').hasMatch(_phoneController.text)) {
-        _showError('请输入有效的手机号');
-        isValid = false;
-      }
-    }
-    
-    // 验证性别
-    if (_editingGender.isNotEmpty && !['男', '女'].contains(_editingGender)) {
-      _showError('性别只能为男、女或保密');
-      isValid = false;
-    }
-    
-    // 验证生日
-    if (_editingBirthday != null) {
-      // 确保生日不是未来日期
-      if (_editingBirthday!.isAfter(DateTime.now())) {
-        _showError('生日不能是未来日期');
-        isValid = false;
-      }
-      // 确保生日在合理范围内（例如1900年之后）
-      if (_editingBirthday!.year < 1900) {
-        _showError('生日年份不能早于1900年');
-        isValid = false;
-      }
-    }
-    
-    return isValid;
-  }
+
   
   // 保存用户信息到数据库
   Future<void> _saveUserInfo(String field) async {

@@ -27,6 +27,7 @@ import 'package:moment_keep/presentation/components/responsive_navigation.dart';
 import 'package:moment_keep/presentation/pages/login_page.dart';
 import 'package:moment_keep/presentation/pages/register_page.dart';
 import 'package:moment_keep/presentation/pages/forgot_password_page.dart';
+import 'package:moment_keep/presentation/pages/reset_password_page.dart';
 
 
 import 'package:window_manager/window_manager.dart';
@@ -288,6 +289,7 @@ class MyAppContent extends ConsumerWidget {
               '/login': (context) => const LoginPage(),
               '/register': (context) => const RegisterPage(),
               '/forgot_password': (context) => const ForgotPasswordPage(),
+              '/reset_password': (context) => const ResetPasswordPage(),
             },
             debugShowCheckedModeBanner: false,
             // 添加路由观察者，用于监听页面可见性变化

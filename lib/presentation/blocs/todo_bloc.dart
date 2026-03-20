@@ -310,7 +310,7 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
           userId,
           pointsPerTodo.toDouble(),
           description: '完成待办事项: ${_todos[index].title}',
-          transactionType: 'habit_completed',
+          transactionType: 'todo_completed',
           relatedId: event.todoId,
         );
         // 取消待办事项提醒
@@ -321,7 +321,7 @@ class TodoBloc extends Bloc<TodoEvent, TodoState> {
           userId,
           -pointsPerTodo.toDouble(),
           description: '取消完成待办事项: ${_todos[index].title}',
-          transactionType: 'habit_completed',
+          transactionType: 'todo_completed',
           relatedId: event.todoId,
         );
         // 重新设置待办事项提醒

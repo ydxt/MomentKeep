@@ -10,6 +10,7 @@ import 'package:moment_keep/services/product_database_service.dart';
 import 'package:moment_keep/presentation/pages/merchant_order_detail_page.dart';
 import 'package:moment_keep/presentation/pages/merchant_message_center_page.dart';
 import 'package:moment_keep/presentation/pages/date_picker_utils.dart';
+import 'package:moment_keep/presentation/pages/logistics_tracking_page.dart';
 import 'package:moment_keep/core/theme/theme_provider.dart';
 
 /// 商家订单状态枚举
@@ -1439,8 +1440,13 @@ class _MerchantOrderManagementPageState
 
   /// 查看物流
   void _viewLogistics(String orderId) {
-    // 实现查看物流逻辑
     debugPrint('查看物流: $orderId');
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LogisticsTrackingPage(orderId: orderId),
+      ),
+    );
   }
 
   /// 导出订单数据

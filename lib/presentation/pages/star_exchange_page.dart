@@ -19,7 +19,19 @@ import 'package:moment_keep/presentation/pages/shopping_cart_page.dart';
 import 'package:moment_keep/presentation/pages/bills_page.dart';
 import 'package:moment_keep/presentation/pages/coupons_detail_page.dart';
 import 'package:moment_keep/presentation/pages/shopping_card_page.dart';
-import 'package:moment_keep/presentation/components/payment_dialog.dart';
+import 'package:moment_keep/presentation/pages/logistics_page.dart';
+import 'package:moment_keep/presentation/pages/merchant_management_page.dart';
+import 'package:moment_keep/presentation/pages/payment_records_page.dart';
+import 'package:moment_keep/presentation/pages/stock_records_page.dart';
+import 'package:moment_keep/presentation/pages/merchant_finance_page.dart';
+import 'package:moment_keep/presentation/pages/client_payment_records_page.dart';
+import 'package:moment_keep/presentation/pages/merchant_payment_records_page.dart';
+import 'package:moment_keep/presentation/pages/favorite_products_page.dart';
+import 'package:moment_keep/presentation/pages/logistics_tracking_page.dart';
+import 'package:moment_keep/presentation/pages/merchant_detail_page.dart';
+import 'package:moment_keep/presentation/pages/product_review_management_page.dart';
+import 'package:moment_keep/presentation/pages/coupon_management_page.dart';
+import 'package:moment_keep/presentation/pages/red_packet_management_page.dart';
 
 /// 支付方式枚举
 enum PaymentMethod {
@@ -97,10 +109,7 @@ class _StarExchangePageState extends ConsumerState<StarExchangePage> {
   /// 处理商品兑换
   Future<void> _handleExchange(StarProduct product) async {
     // 使用新的支付对话框组件
-    await showPaymentDialog(
-      context: context,
-      product: product,
-    );
+    await _showPaymentDialog(product);
   }
 
   /// 显示兑换确认对话框
@@ -288,23 +297,15 @@ class _StarExchangePageState extends ConsumerState<StarExchangePage> {
           color: theme.colorScheme.surfaceVariant,
           itemBuilder: (context) => [
             PopupMenuItem(
-              value: 'bills',
+              enabled: false,
               child: Text(
-                '账单',
-                style: TextStyle(color: theme.colorScheme.onSurface),
+                '━━━ 客户版功能 ━━━',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-              onTap: () {
-                // 账单功能
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  // 导航到账单页面
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => BillsPage(),
-                    ),
-                  );
-                });
-              },
             ),
             PopupMenuItem(
               value: 'myOrders',
@@ -313,7 +314,6 @@ class _StarExchangePageState extends ConsumerState<StarExchangePage> {
                 style: TextStyle(color: theme.colorScheme.onSurface),
               ),
               onTap: () {
-                // 我的订单
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   Navigator.push(
                     context,
@@ -325,13 +325,91 @@ class _StarExchangePageState extends ConsumerState<StarExchangePage> {
               },
             ),
             PopupMenuItem(
-              value: 'merchantOrders',
+              value: 'favoriteProducts',
               child: Text(
-                '订单管理(卖家)',
+                '我的收藏',
                 style: TextStyle(color: theme.colorScheme.onSurface),
               ),
               onTap: () {
-                // 商家订单管理
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const FavoriteProductsPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'clientPaymentRecords',
+              child: Text(
+                '支付记录',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ClientPaymentRecordsPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'logisticsTracking',
+              child: Text(
+                '物流跟踪',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const LogisticsTrackingPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'bills',
+              child: Text(
+                '账单',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => BillsPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              enabled: false,
+              child: Text(
+                '━━━ 商家版功能 ━━━',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            PopupMenuItem(
+              value: 'merchantOrders',
+              child: Text(
+                '订单管理',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   Navigator.push(
                     context,
@@ -349,7 +427,6 @@ class _StarExchangePageState extends ConsumerState<StarExchangePage> {
                 style: TextStyle(color: theme.colorScheme.onSurface),
               ),
               onTap: () {
-                // 商品管理
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   Navigator.push(
                     context,
@@ -368,12 +445,158 @@ class _StarExchangePageState extends ConsumerState<StarExchangePage> {
                 style: TextStyle(color: theme.colorScheme.onSurface),
               ),
               onTap: () {
-                // 商品审核
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
                       builder: (context) => const ProductReviewPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'productReviewManagement',
+              child: Text(
+                '评价管理',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const ProductReviewManagementPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'stockRecords',
+              child: Text(
+                '库存记录',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const StockRecordsPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'logistics',
+              child: Text(
+                '物流管理',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const LogisticsPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'merchantPaymentRecords',
+              child: Text(
+                '支付记录',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const MerchantPaymentRecordsPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'merchantFinance',
+              child: Text(
+                '财务统计',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const MerchantFinancePage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              enabled: false,
+              child: Text(
+                '━━━ 系统管理 ━━━',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            PopupMenuItem(
+              value: 'merchantManagement',
+              child: Text(
+                '商家管理',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const MerchantManagementPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'couponManagement',
+              child: Text(
+                '优惠券管理',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const CouponManagementPage(),
+                    ),
+                  );
+                });
+              },
+            ),
+            PopupMenuItem(
+              value: 'redPacketManagement',
+              child: Text(
+                '红包管理',
+                style: TextStyle(color: theme.colorScheme.onSurface),
+              ),
+              onTap: () {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const RedPacketManagementPage(),
                     ),
                   );
                 });
@@ -1484,6 +1707,22 @@ class _StarExchangePageState extends ConsumerState<StarExchangePage> {
       // 保存原始金额用于订单记录
       originalPoints = points;
       originalCash = cash;
+      
+      // 检查积分是否足够（如果使用积分支付）
+      if (points > 0) {
+        final currentPoints = await databaseService.getUserPoints(userId);
+        if (currentPoints < points) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('积分不足，当前积分: ${currentPoints.toInt()}，需要积分: ${points.toInt()}'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+          return;
+        }
+      }
 
       // 应用优惠券
       int couponDiscount = 0;
@@ -1844,6 +2083,7 @@ class _StarExchangePageState extends ConsumerState<StarExchangePage> {
         'id': orderId,
         'user_id': userId,
         'product_id': product.id,
+        'merchant_id': product.merchantId,
         'product_name': product.name,
         'product_image': product.image,
         'points': product.points,

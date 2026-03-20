@@ -91,14 +91,6 @@ class HabitView extends ConsumerWidget {
             builder: (context, categoryState) {
               if (categoryState is CategoryLoaded) {
                 return BlocBuilder<HabitBloc, HabitState>(
-                  buildWhen: (previous, current) {
-                    // 只有当习惯列表实际变化时才重建
-                    if (previous is HabitLoaded && current is HabitLoaded) {
-                      return previous.habits != current.habits;
-                    }
-                    // 状态类型变化时重建
-                    return previous.runtimeType != current.runtimeType;
-                  },
                   builder: (context, habitState) {
                     List<Habit> habits = [];
                     if (habitState is HabitLoaded) {
@@ -1603,10 +1595,14 @@ class HabitItem extends ConsumerWidget {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceVariant,
+        color: habit.type == HabitType.negative 
+            ? theme.colorScheme.error.withOpacity(0.1) 
+            : theme.colorScheme.surfaceVariant,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: theme.colorScheme.outline,
+          color: habit.type == HabitType.negative 
+              ? theme.colorScheme.error 
+              : theme.colorScheme.outline,
           width: 1,
         ),
       ),
@@ -1637,13 +1633,37 @@ class HabitItem extends ConsumerWidget {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    habit.name,
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: theme.colorScheme.onSurface,
-                    ),
+                  Row(
+                    children: [
+                      Text(
+                        habit.name,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: habit.type == HabitType.negative 
+                              ? theme.colorScheme.error 
+                              : theme.colorScheme.onSurface,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: habit.type == HabitType.negative 
+                              ? theme.colorScheme.error 
+                              : theme.colorScheme.primary,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          habit.type.displayName,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: theme.colorScheme.onPrimary,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -1680,8 +1700,12 @@ class HabitItem extends ConsumerWidget {
           }
         },
         style: ElevatedButton.styleFrom(
-          backgroundColor: theme.colorScheme.primaryContainer,
-          foregroundColor: theme.colorScheme.onPrimaryContainer,
+          backgroundColor: habit.type == HabitType.negative 
+              ? theme.colorScheme.errorContainer 
+              : theme.colorScheme.primaryContainer,
+          foregroundColor: habit.type == HabitType.negative 
+              ? theme.colorScheme.onErrorContainer 
+              : theme.colorScheme.onPrimaryContainer,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(8),
@@ -1689,7 +1713,11 @@ class HabitItem extends ConsumerWidget {
           elevation: 0,
         ),
         child: Text(
-          isChecked ? '已完成' : (isToday ? '打卡' : '补卡'),
+          isChecked 
+              ? (habit.type == HabitType.negative ? '已记录' : '已完成')
+              : (isToday 
+                  ? (habit.type == HabitType.negative ? '记录' : '打卡') 
+                  : (habit.type == HabitType.negative ? '补记' : '补卡')),
           style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.bold,
@@ -1708,8 +1736,12 @@ class HabitItem extends ConsumerWidget {
         }
       },
       style: ElevatedButton.styleFrom(
-        backgroundColor: theme.colorScheme.primaryContainer,
-        foregroundColor: theme.colorScheme.onPrimaryContainer,
+        backgroundColor: habit.type == HabitType.negative 
+            ? theme.colorScheme.errorContainer 
+            : theme.colorScheme.primaryContainer,
+        foregroundColor: habit.type == HabitType.negative 
+            ? theme.colorScheme.onErrorContainer 
+            : theme.colorScheme.onPrimaryContainer,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(8),
@@ -1717,7 +1749,11 @@ class HabitItem extends ConsumerWidget {
         elevation: 0,
       ),
       child: Text(
-        isChecked ? '已完成' : (isToday ? '打卡' : '补卡'),
+        isChecked 
+            ? (habit.type == HabitType.negative ? '已记录' : '已完成')
+            : (isToday 
+                ? (habit.type == HabitType.negative ? '记录' : '打卡') 
+                : (habit.type == HabitType.negative ? '补记' : '补卡')),
         style: TextStyle(
           fontSize: 14,
           fontWeight: FontWeight.bold,
@@ -1998,9 +2034,12 @@ class _CheckInDialogState extends State<_CheckInDialog> {
       ),
     );
     
-    // 初始化得分控制器
+    // 初始化得分控制器：对于减分项，将负数转换为正数显示
+    final displayScore = widget.habit.type == HabitType.negative 
+        ? todayRecord.score.abs() 
+        : todayRecord.score;
     _scoreController = TextEditingController(
-      text: todayRecord.score.toString(),
+      text: displayScore.toString(),
     );
     
     // 初始化评论内容
@@ -2030,10 +2069,13 @@ class _CheckInDialogState extends State<_CheckInDialog> {
       return;
     }
     
+    // 如果是减分项，将分数转为负数
+    final int finalScore = widget.habit.type == HabitType.negative ? -score : score;
+    
     // 记录打卡完成事件
     context.read<HabitBloc>().add(RecordHabitCompletion(
           widget.habit.id,
-          score,
+          finalScore,
           _commentContent,
         ));
     
@@ -2042,19 +2084,21 @@ class _CheckInDialogState extends State<_CheckInDialog> {
     
     // 显示打卡成功提示
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${widget.habit.name} 打卡成功！')),
+      SnackBar(content: Text('${widget.habit.name} ${widget.habit.type == HabitType.negative ? '记录' : '打卡'}成功！')),
     );
   }
   
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isNegative = widget.habit.type == HabitType.negative;
+    final primaryColor = isNegative ? theme.colorScheme.error : theme.colorScheme.primary;
     
     return AlertDialog(
-      title: Text('打卡: ${widget.habit.name}'),
+      title: Text('${isNegative ? '记录' : '打卡'}: ${widget.habit.name}'),
       backgroundColor: theme.colorScheme.surface,
       titleTextStyle: TextStyle(
-        color: theme.colorScheme.onSurface,
+        color: isNegative ? theme.colorScheme.error : theme.colorScheme.onSurface,
         fontSize: 18,
         fontWeight: FontWeight.bold,
       ),
@@ -2065,9 +2109,9 @@ class _CheckInDialogState extends State<_CheckInDialog> {
           children: [
             // 得分输入
             Text(
-              '今天的得分',
+              isNegative ? '今天的扣分' : '今天的得分',
               style: TextStyle(
-                color: theme.colorScheme.onSurfaceVariant,
+                color: isNegative ? theme.colorScheme.error : theme.colorScheme.onSurfaceVariant,
                 fontSize: 14,
                 fontWeight: FontWeight.bold,
               ),
@@ -2083,28 +2127,37 @@ class _CheckInDialogState extends State<_CheckInDialog> {
                       hintText: '1-${widget.habit.fullStars}',
                       hintStyle: TextStyle(color: theme.colorScheme.onSurfaceVariant.withOpacity(0.6)),
                       border: OutlineInputBorder(
-                        borderSide: BorderSide(color: theme.colorScheme.outline),
+                        borderSide: BorderSide(color: primaryColor),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: primaryColor, width: 2),
                       ),
                       filled: true,
                       fillColor: theme.colorScheme.surfaceVariant,
+                      prefixIcon: isNegative 
+                          ? Icon(Icons.remove, color: primaryColor) 
+                          : null,
                       suffixIcon: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Text(
                             '/${widget.habit.fullStars}',
-                            style: TextStyle(color: theme.colorScheme.primary),
+                            style: TextStyle(color: primaryColor),
                           ),
                           const SizedBox(width: 4),
                           Icon(
                             Icons.star,
-                            color: theme.colorScheme.primary,
+                            color: primaryColor,
                             size: 20,
                           ),
                           const SizedBox(width: 8),
                         ],
                       ),
                     ),
-                    style: TextStyle(color: theme.colorScheme.onSurface),
+                    style: TextStyle(
+                      color: isNegative ? theme.colorScheme.error : theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
@@ -2155,7 +2208,7 @@ class _CheckInDialogState extends State<_CheckInDialog> {
         ),
         TextButton(
           onPressed: _saveCheckIn,
-          child: Text('保存', style: TextStyle(color: theme.colorScheme.primary)),
+          child: Text('保存', style: TextStyle(color: primaryColor)),
         ),
       ],
     );

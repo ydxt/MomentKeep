@@ -3622,14 +3622,53 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
                                     .toString();
                                 final checkboxData = jsonEncode(
                                     {'id': checkboxId, 'checked': false});
+                                
+                                _isHandlingCheckbox = true;
+                                
+                                // 先插入复选框
                                 _controller.replaceText(
-                                    selection.start,
-                                    selection.extentOffset - selection.start,
-                                    flutter_quill.BlockEmbed.custom(
-                                        flutter_quill.CustomBlockEmbed(
-                                            'checkbox', checkboxData)),
-                                    TextSelection.collapsed(
-                                        offset: selection.start + 1));
+                                  selection.start,
+                                  selection.extentOffset - selection.start,
+                                  flutter_quill.BlockEmbed.custom(
+                                      flutter_quill.CustomBlockEmbed(
+                                          'checkbox', checkboxData)),
+                                  null,
+                                );
+                                
+                                // 延迟插入占位符并设置光标
+                                Future.delayed(const Duration(milliseconds: 150), () {
+                                  if (!mounted) {
+                                    _isHandlingCheckbox = false;
+                                    return;
+                                  }
+                                  
+                                  // 在复选框后插入一个空格作为分隔
+                                  _controller.document.insert(selection.start + 1, ' ');
+                                  
+                                  // 使用 WidgetsBinding 确保在帧完成后设置光标
+                                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                                    if (!mounted) {
+                                      _isHandlingCheckbox = false;
+                                      return;
+                                    }
+                                    
+                                    // 设置光标到空格之后
+                                    _controller.updateSelection(
+                                      TextSelection.collapsed(offset: selection.start + 2),
+                                      flutter_quill.ChangeSource.local,
+                                    );
+                                    
+                                    debugPrint('Checkbox inserted, cursor at: ${selection.start + 2}');
+                                    debugPrint('Current selection: ${_controller.selection}');
+                                    
+                                    _quillFocusNode.requestFocus();
+                                    
+                                    // 延迟释放标志
+                                    Future.delayed(const Duration(milliseconds: 300), () {
+                                      _isHandlingCheckbox = false;
+                                    });
+                                  });
+                                });
                               },
                               tooltip: null,
                             ),
@@ -3746,14 +3785,53 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
                                   .toString();
                               final checkboxData = jsonEncode(
                                   {'id': checkboxId, 'checked': false});
+                              
+                              _isHandlingCheckbox = true;
+                              
+                              // 先插入复选框
                               _controller.replaceText(
-                                  selection.start,
-                                  selection.extentOffset - selection.start,
-                                  flutter_quill.BlockEmbed.custom(
-                                      flutter_quill.CustomBlockEmbed(
-                                          'checkbox', checkboxData)),
-                                  TextSelection.collapsed(
-                                      offset: selection.start + 1));
+                                selection.start,
+                                selection.extentOffset - selection.start,
+                                flutter_quill.BlockEmbed.custom(
+                                    flutter_quill.CustomBlockEmbed(
+                                        'checkbox', checkboxData)),
+                                null,
+                              );
+                              
+                              // 延迟插入空格并设置光标
+                              Future.delayed(const Duration(milliseconds: 150), () {
+                                if (!mounted) {
+                                  _isHandlingCheckbox = false;
+                                  return;
+                                }
+                                
+                                // 在复选框后插入一个空格作为分隔
+                                _controller.document.insert(selection.start + 1, ' ');
+                                
+                                // 使用 WidgetsBinding 确保在帧完成后设置光标
+                                WidgetsBinding.instance.addPostFrameCallback((_) {
+                                  if (!mounted) {
+                                    _isHandlingCheckbox = false;
+                                    return;
+                                  }
+                                  
+                                  // 设置光标到空格之后
+                                  _controller.updateSelection(
+                                    TextSelection.collapsed(offset: selection.start + 2),
+                                    flutter_quill.ChangeSource.local,
+                                  );
+                                  
+                                  debugPrint('Checkbox inserted, cursor at: ${selection.start + 2}');
+                                  debugPrint('Current selection: ${_controller.selection}');
+                                  
+                                  _quillFocusNode.requestFocus();
+                                  
+                                  // 延迟释放标志
+                                  Future.delayed(const Duration(milliseconds: 300), () {
+                                    _isHandlingCheckbox = false;
+                                  });
+                                });
+                              });
                             },
                             tooltip: '插入复选框',
                           ),

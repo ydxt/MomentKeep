@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 
-// 自定义复选框嵌入构建器
+/// 自定义复选框嵌入构建器
 class CheckboxEmbedBuilder extends EmbedBuilder {
   final Function(String id, bool isChecked) onToggle;
 
@@ -27,34 +27,37 @@ class CheckboxEmbedBuilder extends EmbedBuilder {
     final id = data['id'] as String;
     final isChecked = data['checked'] as bool;
 
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () {
-          debugPrint('Checkbox tapped: $id, current: $isChecked');
-          onToggle(id, isChecked);
-        },
-        child: Padding(
-          padding: const EdgeInsets.only(right: 8, top: 2, bottom: 2),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 20,
-                height: 20,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                      color: isChecked ? Colors.blue : Colors.grey.shade400,
-                      width: 2),
-                  color: isChecked ? Colors.blue : Colors.transparent,
+    // 使用 ExcludeSemantics 防止 Windows 端辅助功能问题
+    return ExcludeSemantics(
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            debugPrint('Checkbox tapped: $id, current: $isChecked');
+            onToggle(id, isChecked);
+          },
+          child: Padding(
+            padding: const EdgeInsets.only(right: 8, top: 2, bottom: 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 20,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                        color: isChecked ? Colors.blue : Colors.grey.shade400,
+                        width: 2),
+                    color: isChecked ? Colors.blue : Colors.transparent,
+                  ),
+                  child: isChecked
+                      ? const Icon(Icons.check, size: 14, color: Colors.white)
+                      : null,
                 ),
-                child: isChecked
-                    ? const Icon(Icons.check, size: 14, color: Colors.white)
-                    : null,
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

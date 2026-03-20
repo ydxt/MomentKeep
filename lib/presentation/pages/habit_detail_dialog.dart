@@ -1083,11 +1083,11 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
     if (checkInRecords.isEmpty) {
       return [];
     }
-    
+
     // 按日期排序打卡记录
     final sortedRecords = List.from(checkInRecords)..sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    
-    // 按天分组，计算每天的平均得分
+
+    // 按天分组，计算每天的平均得分（考虑正负向）
     final dailyScores = <DateTime, List<int>>{};
     for (final record in sortedRecords) {
       final date = DateTime(
@@ -1098,16 +1098,18 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
       if (!dailyScores.containsKey(date)) {
         dailyScores[date] = [];
       }
-      dailyScores[date]!.add(record.score);
+      // 根据 isNegative 字段调整分数：负向习惯得分为负数
+      final actualScore = record.isNegative ? -record.score : record.score;
+      dailyScores[date]!.add(actualScore);
     }
-    
+
     // 计算每天的平均得分
     final trendData = <int>[];
     for (final scores in dailyScores.values) {
       final avgScore = scores.reduce((a, b) => a + b) ~/ scores.length;
       trendData.add(avgScore);
     }
-    
+
     return trendData;
   }
   
@@ -1197,6 +1199,7 @@ class _InteractiveTrendChartState extends State<_InteractiveTrendChart> {
               data: widget.data,
               hoverIndex: _hoverIndex,
               theme: widget.theme,
+              containsNegative: widget.data.any((value) => value < 0),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1263,82 +1266,188 @@ class _TrendChartPainter extends CustomPainter {
   final List<int> data;
   final int? hoverIndex;
   final ThemeData theme;
-  
-  _TrendChartPainter({required this.data, this.hoverIndex, required this.theme});
-  
+  final bool containsNegative;
+
+  _TrendChartPainter({
+    required this.data,
+    this.hoverIndex,
+    required this.theme,
+    this.containsNegative = false,
+  });
+
   @override
   void paint(Canvas canvas, Size size) {
     // 如果没有数据，直接返回
     if (data.isEmpty) {
       return;
     }
-    
-    final paint = Paint()
-      ..color = theme.colorScheme.primary
+
+    // 正向分数颜色（绿色）
+    final positivePaint = Paint()
+      ..color = const Color(0xFF13EC5B) // 绿色
       ..strokeWidth = 2
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
-      
-    final dotPaint = Paint()
-      ..color = theme.colorScheme.primary
+
+    // 负向分数颜色（红色）
+    final negativePaint = Paint()
+      ..color = const Color(0xFFFF5252) // 红色
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    final positiveDotPaint = Paint()
+      ..color = const Color(0xFF13EC5B)
       ..style = PaintingStyle.fill;
-      
+
+    final negativeDotPaint = Paint()
+      ..color = const Color(0xFFFF5252)
+      ..style = PaintingStyle.fill;
+
     final hoverDotPaint = Paint()
       ..color = theme.colorScheme.onSurface
       ..style = PaintingStyle.fill;
-      
-    final bgPaint = Paint()
-      ..color = theme.colorScheme.primary
+
+    // 渐变填充（正向区域）
+    final positiveBgPaint = Paint()
       ..strokeWidth = 1
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..shader = LinearGradient(
+      ..shader = const LinearGradient(
         colors: [
-          theme.colorScheme.primary.withOpacity(0.3),
-          theme.colorScheme.primary.withOpacity(0),
+          Color(0x6613EC5B),
+          Color(0x0013EC5B),
         ],
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
       ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-      
+
+    // 渐变填充（负向区域）
+    final negativeBgPaint = Paint()
+      ..strokeWidth = 1
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..shader = const LinearGradient(
+        colors: [
+          Color(0x66FF5252),
+          Color(0x00FF5252),
+        ],
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+
     // 计算坐标
     final maxValue = data.reduce((a, b) => a > b ? a : b).toDouble();
     final minValue = data.reduce((a, b) => a < b ? a : b).toDouble();
     final valueRange = maxValue - minValue;
-    
+
+    // 基准线 Y 坐标（当包含负数时）
+    double? zeroY;
+    if (containsNegative && minValue < 0 && maxValue > 0) {
+      // 计算零点在 Y 轴的位置
+      zeroY = size.height - ((0 - minValue) / valueRange) * size.height * 0.7 - 20;
+    }
+
     final points = <Offset>[];
+    final pointColors = <int, bool>{}; // 记录每个点是正是负
+
     for (var i = 0; i < data.length; i++) {
       final x = (i / (data.length - 1)) * size.width;
       double normalizedValue = 0.0;
       if (valueRange > 0) {
         normalizedValue = (data[i] - minValue) / valueRange;
       } else {
-        // 当所有值都相同时，使用默认值0.5
         normalizedValue = 0.5;
       }
-      final y = size.height - (normalizedValue * size.height * 0.7) - 20; // 留一些边距
+      final y = size.height - (normalizedValue * size.height * 0.7) - 20;
       points.add(Offset(x, y));
+      pointColors[i] = data[i] >= 0; // true 为正，false 为负
     }
-    
-    // 绘制渐变填充
-    final path = Path()..moveTo(points.first.dx, size.height);
-    for (var point in points) {
-      path.lineTo(point.dx, point.dy);
+
+    // 绘制基准线（当包含负数时）
+    if (zeroY != null) {
+      final zeroLinePaint = Paint()
+        ..color = Colors.grey.withOpacity(0.5)
+        ..strokeWidth = 1
+        ..style = PaintingStyle.stroke;
+
+      // 绘制虚线基准线
+      const dashWidth = 5.0;
+      const dashSpace = 3.0;
+      double startX = 0;
+      while (startX < size.width) {
+        canvas.drawLine(
+          Offset(startX, zeroY),
+          Offset((startX + dashWidth).clamp(0, size.width), zeroY),
+          zeroLinePaint,
+        );
+        startX += dashWidth + dashSpace;
+      }
     }
-    path.lineTo(points.last.dx, size.height);
-    path.close();
-    canvas.drawPath(path, bgPaint);
-    
-    // 绘制折线
+
+    // 分别绘制正向和负向区域的渐变填充
+    if (containsNegative && zeroY != null) {
+      // 正向区域填充
+      final positivePath = Path()..moveTo(points.first.dx, zeroY);
+      for (var i = 0; i < points.length; i++) {
+        if (data[i] >= 0) {
+          positivePath.lineTo(points[i].dx, points[i].dy);
+        }
+      }
+      // 找到最后一个正数点
+      int lastPositiveIndex = 0;
+      for (var i = points.length - 1; i >= 0; i--) {
+        if (data[i] >= 0) {
+          lastPositiveIndex = i;
+          break;
+        }
+      }
+      positivePath.lineTo(points[lastPositiveIndex].dx, zeroY);
+      positivePath.close();
+      canvas.drawPath(positivePath, positiveBgPaint);
+
+      // 负向区域填充
+      final negativePath = Path()..moveTo(points.first.dx, zeroY);
+      for (var i = 0; i < points.length; i++) {
+        if (data[i] < 0) {
+          negativePath.lineTo(points[i].dx, points[i].dy);
+        }
+      }
+      // 找到最后一个负数点
+      int lastNegativeIndex = points.length - 1;
+      for (var i = 0; i < points.length; i++) {
+        if (data[i] < 0) {
+          lastNegativeIndex = i;
+        }
+      }
+      negativePath.lineTo(points[lastNegativeIndex].dx, zeroY);
+      negativePath.close();
+      canvas.drawPath(negativePath, negativeBgPaint);
+    } else {
+      // 无负数时的渐变填充
+      final path = Path()..moveTo(points.first.dx, size.height);
+      for (var point in points) {
+        path.lineTo(point.dx, point.dy);
+      }
+      path.lineTo(points.last.dx, size.height);
+      path.close();
+      canvas.drawPath(path, positiveBgPaint);
+    }
+
+    // 绘制折线（分段颜色）
     for (var i = 0; i < points.length - 1; i++) {
+      final paint = pointColors[i]! ? positivePaint : negativePaint;
       canvas.drawLine(points[i], points[i + 1], paint);
     }
-    
+
     // 绘制数据点
     for (var i = 0; i < points.length; i++) {
       final point = points[i];
+      final dotPaint = pointColors[i]! ? positiveDotPaint : negativeDotPaint;
       if (i == hoverIndex) {
         // 绘制悬停数据点（放大并添加主题颜色边框）
         canvas.drawCircle(point, 8, hoverDotPaint);
@@ -1349,7 +1458,7 @@ class _TrendChartPainter extends CustomPainter {
       }
     }
   }
-  
+
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
     return true;
