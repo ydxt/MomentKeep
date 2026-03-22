@@ -12,6 +12,9 @@ class CheckboxEmbedBuilder extends EmbedBuilder {
   String get key => 'checkbox';
 
   @override
+  bool get expanded => false;
+
+  @override
   Widget build(BuildContext context, EmbedContext embedContext) {
     var data = embedContext.node.value.data;
     if (data is String) {

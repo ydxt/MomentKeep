@@ -1335,7 +1335,7 @@ class ProductDatabaseService {
         await db.execute('ALTER TABLE orders ADD COLUMN variant TEXT');
         _log('Added variant column to orders table');
       } catch (e) {
-        _log('variant column might already exist: $e');
+        // _log('variant column might already exist: $e');
       }
 
       // 为reviews表添加缺失的字段
@@ -1736,7 +1736,7 @@ class ProductDatabaseService {
       await db.execute('ALTER TABLE orders ADD COLUMN variant TEXT');
       _log('Added variant column to orders table');
     } catch (e) {
-      _log('variant column might already exist in orders table: $e');
+      // _log('variant column might already exist in orders table: $e');
     }
 
     // 为orders表添加original_points字段（如果不存在）

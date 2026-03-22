@@ -5,7 +5,6 @@ import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/foundation.dart' hide Category;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_quill/flutter_quill.dart' as flutter_quill;
@@ -39,6 +38,7 @@ import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:camera/camera.dart';
+import 'package:flutter_math_fork/flutter_math.dart';
 
 import 'package:moment_keep/presentation/components/journal_editor/video_width_manager.dart';
 
@@ -46,6 +46,7 @@ import 'package:moment_keep/presentation/components/journal_editor/video_width_m
 extension ColorExtension on Color {
   /// 将 Color 转换为十六进制字符串，格式为 #RRGGBB
   String toHex() {
+    // ignore: deprecated_member_use
     return '#${value.toRadixString(16).substring(2).toUpperCase()}';
   }
 }
@@ -59,6 +60,7 @@ class _HorizontalLinesPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..isAntiAlias = true
+      // ignore: deprecated_member_use
       ..color = AppTheme.mediumGray.withOpacity(0.3)
       ..strokeWidth = 1.0;
 
@@ -172,6 +174,7 @@ class WaveformPainter extends CustomPainter {
     // Optionally fill the area under the waveform
     if (points.length > 1) {
       final fillPaint = Paint()
+        // ignore: deprecated_member_use
         ..color = waveformColor.withOpacity(0.3)
         ..style = PaintingStyle.fill;
 
@@ -304,6 +307,7 @@ class _AudioRecordingDialogState extends State<AudioRecordingDialog> {
     _timer?.cancel();
     _amplitudeSubscription?.cancel();
 
+    if (!mounted) return;
     Navigator.pop(context, RecordingResult(true, widget.fileName));
   }
 
@@ -312,6 +316,7 @@ class _AudioRecordingDialogState extends State<AudioRecordingDialog> {
     _timer?.cancel();
     _amplitudeSubscription?.cancel();
 
+    if (!mounted) return;
     Navigator.pop(context, RecordingResult(false, widget.fileName));
   }
 
@@ -346,6 +351,7 @@ class _AudioRecordingDialogState extends State<AudioRecordingDialog> {
                 painter: WaveformPainter(
                   waveformData: _waveformData,
                   backgroundColor: Colors.grey[100]!,
+                  // ignore: deprecated_member_use
                   waveformColor: Colors.blue.withOpacity(0.8),
                   baselineColor: Colors.grey[400]!,
                 ),
@@ -1121,16 +1127,15 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
         if (found && checkboxData != null) {
           final newChecked = !currentStatus;
 
-          // 确保使用一致的格式
-          final newData = jsonEncode({'id': id, 'checked': newChecked});
+          // 确保使用一致的格式 (Map)
+          final newData = {'id': id, 'checked': newChecked};
 
           debugPrint(
               'MinimalJournalEditor._handleCheckboxToggle: TOGGLING checkbox at $offset');
           _controller.replaceText(
             offset,
             1,
-            flutter_quill.BlockEmbed.custom(
-                flutter_quill.CustomBlockEmbed('checkbox', newData)),
+            flutter_quill.Embeddable('checkbox', newData),
             null,
           );
 
@@ -1223,9 +1228,11 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
 
           // 仅当当前行开头有复选框时，才在新行自动插入复选框
           if (prevLineHasCheckbox) {
-            // 检查前一行是否只有复选框（空行情况）
+            // 检查前一行是否只有复选框（空行情况，可能包含 ZWSP 和尾随空格）
             final prevLineLength = prevLineEnd - start;
-            if (prevLineLength <= 1) {
+            final prevLineText = text.substring(start, prevLineEnd);
+            
+            if (prevLineLength <= 1 || prevLineText.substring(1).replaceAll('\u200B', '').trim().isEmpty) {
               // 前一行只有复选框，删除它
               _isHandlingCheckbox = true;
               try {
@@ -1237,24 +1244,29 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
               // 在新行插入复选框嵌入
               final checkboxId =
                   DateTime.now().millisecondsSinceEpoch.toString();
-              final checkboxData =
-                  jsonEncode({'id': checkboxId, 'checked': false});
+              final checkboxData = {'id': checkboxId, 'checked': false};
 
               // 在新行插入复选框嵌入，防止无限循环
               _isHandlingCheckbox = true;
               try {
+                // 插入复选框
                 _controller.replaceText(
                     selection.start,
                     selection.extentOffset - selection.start,
-                    flutter_quill.BlockEmbed.custom(
-                        flutter_quill.CustomBlockEmbed(
-                            'checkbox', checkboxData)),
-                    TextSelection.collapsed(offset: selection.start + 1));
+                    flutter_quill.Embeddable('checkbox', checkboxData),
+                    null);
+                    
+                // 立即插入隔离符(ZWSP)和空格，防止中文输入法吃掉前方的复选框对象导致乱码
+                _controller.replaceText(
+                    selection.start + 1,
+                    0,
+                    '\u200B ',
+                    TextSelection.collapsed(offset: selection.start + 3));
               } finally {
                 _isHandlingCheckbox = false;
               }
 
-              // 移除IME干扰修复逻辑，只单纯插入
+              // 确保获取焦点
               SchedulerBinding.instance.addPostFrameCallback((_) {
                 if (mounted) {
                   _quillFocusNode.requestFocus();
@@ -1342,49 +1354,72 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
       return;
     }
     
+    // 中文输入法（尤其是 Windows/Android）在组合输入时会频繁拦截前方上下文，
+    // 如果复选框正好在这个区域内，输入法会将内嵌对象退化为纯文本 \uFFFC。
+    // 在这里我们检测并静默恢复这些被破坏的嵌入对象，保持 UI 的 Checkbox 正常渲染。
+    if (!_isHandlingCheckbox) {
+      _restoreDegradedEmbeds();
+    }
+    
     // 打印日记内容，分析输入中文前后的变化
-    _printJournalContent();
+    // _printJournalContent();
     
     // 检测修改
     _checkForChanges();
   }
 
-  /// 打印日记内容，用于分析输入中文前后的变化
-  void _printJournalContent() {
-    try {
-      final delta = _controller.document.toDelta();
-      final quillJson = jsonEncode(delta.toJson());
-      
-      debugPrint('=== 日记内容分析 ===');
-      debugPrint('Document length: ${delta.length}');
-      debugPrint('Document JSON (first 1000 chars): ${quillJson.substring(0, math.min(1000, quillJson.length))}...');
-      
-      // 分析嵌入数据
-      int embedCount = 0;
-      for (final op in delta.toList()) {
-        if (op.data is Map) {
-          final dataMap = op.data as Map;
-          embedCount++;
-          debugPrint('Embed $embedCount: ${jsonEncode(dataMap)}');
-          
-          if (dataMap.containsKey('custom')) {
-            final customData = dataMap['custom'];
-            debugPrint('  Custom data type: ${customData.runtimeType}');
-            debugPrint('  Custom data value: $customData');
-            
-            if (customData is String && customData == 'OBJ') {
-              debugPrint('  !!! DETECTED OBJ STRING IN EMBED !!!');
-            }
-          }
+  /// 修复因为中文输入法导致的复选框嵌入退化为纯文本 \uFFFC 字符的问题
+  void _restoreDegradedEmbeds() {
+    final delta = _controller.document.toDelta();
+    int currentIndex = 0;
+    List<int> degradedIndices = [];
+
+    for (final op in delta.toList()) {
+      if (op.isInsert && op.data is String) {
+        final text = op.data as String;
+        int localIndex = 0;
+        int matchIndex = text.indexOf('\uFFFC', localIndex);
+        while (matchIndex != -1) {
+          degradedIndices.add(currentIndex + matchIndex);
+          localIndex = matchIndex + 1;
+          matchIndex = text.indexOf('\uFFFC', localIndex);
         }
       }
-      
-      debugPrint('Total embeds found: $embedCount');
-      debugPrint('=== 日记内容分析结束 ===');
-    } catch (e) {
-      debugPrint('Error printing journal content: $e');
+      currentIndex += op.length ?? 1;
+    }
+
+    if (degradedIndices.isNotEmpty) {
+      // 必须异步执行恢复，否则会与当前输入法流发生内部冲突
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _isHandlingCheckbox = true;
+        try {
+          // 由于替换不改变总长度，因此可以直接按照原下标进行倒序替换，防止前面的替换影响后面的索引
+          for (final index in degradedIndices.reversed) {
+            // 这里我们无法得知原来的复选框ID，所以生成一个新的，保证未选中状态
+            final checkboxData = {
+              'id': DateTime.now().millisecondsSinceEpoch.toString() + '_restored',
+              'checked': false,
+            };
+            
+            // 确认该位置依然是 \uFFFC，防止并发修改引起越界
+            final currentText = _controller.document.toPlainText();
+            if (index < currentText.length && currentText[index] == '\uFFFC') {
+              // 用真正的嵌入对象替换掉纯文本的 \uFFFC，且不影响光标
+              _controller.replaceText(
+                index,
+                1,
+                flutter_quill.Embeddable('checkbox', checkboxData),
+                null, 
+              );
+            }
+          }
+        } finally {
+          _isHandlingCheckbox = false;
+        }
+      });
     }
   }
+
 
   /// 检测是否有修改
   void _checkForChanges() {
@@ -2648,45 +2683,128 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(isBlock ? '插入公式块' : '插入行内公式'),
-        content: TextField(
-          controller: formulaController,
-          decoration: const InputDecoration(
-            hintText: '例如: E = mc^2',
-            border: OutlineInputBorder(),
-          ),
-          maxLines: isBlock ? 3 : 1,
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              final formulaData = {
-                'id': DateTime.now().millisecondsSinceEpoch.toString(),
-                'latex': formulaController.text,
-                'block': isBlock,
-              };
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          return AlertDialog(
+            title: Text(isBlock ? '插入公式块' : '插入行内公式'),
+            content: SizedBox(
+              width: 400,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: formulaController,
+                    decoration: const InputDecoration(
+                      hintText: r'例如: E = mc^2 或 \frac{a}{b}',
+                      border: OutlineInputBorder(),
+                      labelText: 'LaTeX 公式',
+                    ),
+                    maxLines: isBlock ? 4 : 2,
+                    autofocus: true,
+                    onChanged: (_) => setDialogState(() {}),
+                  ),
+                  const SizedBox(height: 12),
+                  // 实时预览区域
+                  Container(
+                    width: double.infinity,
+                    constraints: const BoxConstraints(minHeight: 48),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF5F9FF),
+                      border: Border.all(color: const Color(0xFF90CAF9)),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '预览',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF1976D2),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        if (formulaController.text.trim().isEmpty)
+                          const Text(
+                            '输入 LaTeX 公式后将在此处显示预览',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF90CAF9),
+                              fontStyle: FontStyle.italic,
+                            ),
+                          )
+                        else
+                          Center(
+                            child: Math.tex(
+                              formulaController.text,
+                              textStyle: TextStyle(fontSize: isBlock ? 18.0 : 16.0),
+                              mathStyle: MathStyle.display,
+                              onErrorFallback: (err) {
+                                return Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      formulaController.text,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontStyle: FontStyle.italic,
+                                        fontFamily: 'monospace',
+                                        color: Color(0xFFD32F2F),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '⚠ 语法错误: \${err.message}',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFFD32F2F),
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  final formulaData = {
+                    'id': DateTime.now().millisecondsSinceEpoch.toString(),
+                    'latex': formulaController.text,
+                    'block': isBlock,
+                  };
 
-              final selection = _controller.selection;
-              _controller.replaceText(
-                selection.start,
-                selection.extentOffset - selection.start,
-                flutter_quill.BlockEmbed.custom(flutter_quill.CustomBlockEmbed(
-                    'formula', jsonEncode(formulaData))),
-                TextSelection.collapsed(offset: selection.start + 1),
-              );
+                  final selection = _controller.selection;
+                  _controller.replaceText(
+                    selection.start,
+                    selection.extentOffset - selection.start,
+                    flutter_quill.BlockEmbed.custom(flutter_quill.CustomBlockEmbed(
+                        'formula', jsonEncode(formulaData))),
+                    TextSelection.collapsed(offset: selection.start + 1),
+                  );
 
-              _quillFocusNode.requestFocus();
-              Navigator.pop(context);
-            },
-            child: const Text('插入'),
-          ),
-        ],
+                  _quillFocusNode.requestFocus();
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text('插入'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -3013,10 +3131,11 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
                         }
                       },
                       onChangeEnd: () {
+                        final nav = Navigator.of(context);
                         // 延迟关闭以确保状态稳定
                         Future.delayed(const Duration(milliseconds: 150), () {
-                          if (mounted && Navigator.canPop(context)) {
-                            Navigator.pop(context);
+                          if (mounted && nav.canPop()) {
+                            nav.pop();
                           }
                         });
                       },
@@ -3620,8 +3739,7 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
                                 final checkboxId = DateTime.now()
                                     .millisecondsSinceEpoch
                                     .toString();
-                                final checkboxData = jsonEncode(
-                                    {'id': checkboxId, 'checked': false});
+                                final checkboxData = {'id': checkboxId, 'checked': false};
                                 
                                 _isHandlingCheckbox = true;
                                 
@@ -3629,45 +3747,23 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
                                 _controller.replaceText(
                                   selection.start,
                                   selection.extentOffset - selection.start,
-                                  flutter_quill.BlockEmbed.custom(
-                                      flutter_quill.CustomBlockEmbed(
-                                          'checkbox', checkboxData)),
+                                  flutter_quill.Embeddable('checkbox', checkboxData),
                                   null,
                                 );
                                 
-                                // 延迟插入占位符并设置光标
-                                Future.delayed(const Duration(milliseconds: 150), () {
-                                  if (!mounted) {
-                                    _isHandlingCheckbox = false;
-                                    return;
-                                  }
-                                  
-                                  // 在复选框后插入一个空格作为分隔
-                                  _controller.document.insert(selection.start + 1, ' ');
-                                  
-                                  // 使用 WidgetsBinding 确保在帧完成后设置光标
-                                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                                    if (!mounted) {
-                                      _isHandlingCheckbox = false;
-                                      return;
-                                    }
-                                    
-                                    // 设置光标到空格之后
-                                    _controller.updateSelection(
-                                      TextSelection.collapsed(offset: selection.start + 2),
-                                      flutter_quill.ChangeSource.local,
-                                    );
-                                    
-                                    debugPrint('Checkbox inserted, cursor at: ${selection.start + 2}');
-                                    debugPrint('Current selection: ${_controller.selection}');
-                                    
-                                    _quillFocusNode.requestFocus();
-                                    
-                                    // 延迟释放标志
-                                    Future.delayed(const Duration(milliseconds: 300), () {
-                                      _isHandlingCheckbox = false;
-                                    });
-                                  });
+                                // 立即插入占位空格和零宽字符(ZWSP)并设置光标，防止中文输入法组合导致的乱码
+                                _controller.replaceText(
+                                  selection.start + 1,
+                                  0,
+                                  '\u200B ',
+                                  TextSelection.collapsed(offset: selection.start + 3),
+                                );
+                                
+                                _quillFocusNode.requestFocus();
+                                
+                                // 延迟释放标志
+                                Future.delayed(const Duration(milliseconds: 300), () {
+                                  if (mounted) _isHandlingCheckbox = false;
                                 });
                               },
                               tooltip: null,
@@ -3783,54 +3879,31 @@ class _MinimalJournalEditorState extends State<MinimalJournalEditor> {
                               final checkboxId = DateTime.now()
                                   .millisecondsSinceEpoch
                                   .toString();
-                              final checkboxData = jsonEncode(
-                                  {'id': checkboxId, 'checked': false});
+                              final checkboxData = {'id': checkboxId, 'checked': false};
                               
                               _isHandlingCheckbox = true;
                               
-                              // 先插入复选框
+                              // 插入复选框
                               _controller.replaceText(
                                 selection.start,
                                 selection.extentOffset - selection.start,
-                                flutter_quill.BlockEmbed.custom(
-                                    flutter_quill.CustomBlockEmbed(
-                                        'checkbox', checkboxData)),
+                                flutter_quill.Embeddable('checkbox', checkboxData),
                                 null,
                               );
                               
-                              // 延迟插入空格并设置光标
-                              Future.delayed(const Duration(milliseconds: 150), () {
-                                if (!mounted) {
-                                  _isHandlingCheckbox = false;
-                                  return;
-                                }
-                                
-                                // 在复选框后插入一个空格作为分隔
-                                _controller.document.insert(selection.start + 1, ' ');
-                                
-                                // 使用 WidgetsBinding 确保在帧完成后设置光标
-                                WidgetsBinding.instance.addPostFrameCallback((_) {
-                                  if (!mounted) {
-                                    _isHandlingCheckbox = false;
-                                    return;
-                                  }
-                                  
-                                  // 设置光标到空格之后
-                                  _controller.updateSelection(
-                                    TextSelection.collapsed(offset: selection.start + 2),
-                                    flutter_quill.ChangeSource.local,
-                                  );
-                                  
-                                  debugPrint('Checkbox inserted, cursor at: ${selection.start + 2}');
-                                  debugPrint('Current selection: ${_controller.selection}');
-                                  
-                                  _quillFocusNode.requestFocus();
-                                  
-                                  // 延迟释放标志
-                                  Future.delayed(const Duration(milliseconds: 300), () {
-                                    _isHandlingCheckbox = false;
-                                  });
-                                });
+                              // 立即插入隔离符和空格防止中文输入法组合导致的乱码
+                              _controller.replaceText(
+                                selection.start + 1,
+                                0,
+                                '\u200B ',
+                                TextSelection.collapsed(offset: selection.start + 3),
+                              );
+                              
+                              _quillFocusNode.requestFocus();
+                              
+                              // 延迟释放标志
+                              Future.delayed(const Duration(milliseconds: 300), () {
+                                if (mounted) _isHandlingCheckbox = false;
                               });
                             },
                             tooltip: '插入复选框',
@@ -4056,6 +4129,7 @@ class _SimpleWidthSlider extends StatelessWidget {
                       ),
                       boxShadow: [
                         BoxShadow(
+                          // ignore: deprecated_member_use
                           color: AppTheme.deepSpaceGray.withOpacity(0.15),
                           blurRadius: 4,
                           offset: const Offset(0, 2),
