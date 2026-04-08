@@ -491,6 +491,7 @@ class DashboardBloc extends Bloc<DashboardEvent, DashboardState> {
       scoreTrendData: scoreTrendData,
       habitScoreTrendData: habitScoreTrendData,
       checkInHistory: checkInHistory,
+      dailyCheckInScores: scoreTrendData,
       totalTodos: totalTodos,
       completedTodos: completedTodos,
       todoCompletionRate: todoCompletionRate,

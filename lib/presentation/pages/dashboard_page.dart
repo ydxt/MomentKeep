@@ -286,7 +286,7 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
           ],
         ),
         child: ClipOval(
-          child: user?.avatar != null && user!.avatar!.isNotEmpty
+          child: user?.avatar != null && user?.avatar!.isNotEmpty == true
               ? Image.file(
                   File(user!.avatar!),
                   fit: BoxFit.cover,
@@ -297,7 +297,7 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
                   color: theme.colorScheme.primary,
                   child: Center(
                     child: Text(
-                      user?.username != null && user!.username.isNotEmpty
+                      user?.username != null && user?.username.isNotEmpty == true
                           ? user!.username.substring(0, 1).toUpperCase()
                           : 'U',
                       style: TextStyle(
@@ -1405,6 +1405,25 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
                   final isToday = day == currentDay &&
                       currentMonth == now.month &&
                       currentYear == now.year;
+                  
+                  // 获取当天的打卡分数
+                  final dayScore = dashboard.dailyCheckInScores[dateString] ?? 0.0;
+                  
+                  // 根据分数计算颜色深度（热力图效果）
+                  Color heatColor;
+                  if (!isCheckedIn || dayScore == 0.0) {
+                    heatColor = Colors.transparent;
+                  } else {
+                    // 根据分数 1-5 设置不同深度的颜色
+                    final intensity = dayScore / 5.0; // 0.0 - 1.0
+                    if (isToday) {
+                      // 今天使用特殊颜色
+                      heatColor = theme.colorScheme.primary;
+                    } else {
+                      // 根据强度设置颜色深度
+                      heatColor = theme.colorScheme.primary.withOpacity(intensity);
+                    }
+                  }
 
                   return Center(
                     child: GestureDetector(
@@ -1417,11 +1436,7 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
                         height: 28,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: isCheckedIn
-                              ? (isToday
-                                  ? theme.colorScheme.primary
-                                  : theme.colorScheme.surfaceContainer)
-                              : Colors.transparent,
+                          color: heatColor,
                           border: isToday
                               ? Border.all(
                                   color: theme.colorScheme.primary,
@@ -1442,13 +1457,13 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
                           child: Text(
                             '$day',
                             style: TextStyle(
-                              color: isCheckedIn
+                              color: isCheckedIn && dayScore > 0
                                   ? (isToday
                                       ? theme.colorScheme.onPrimary
-                                      : theme.colorScheme.primary)
+                                      : theme.colorScheme.onPrimary)
                                   : theme.colorScheme.onSurfaceVariant,
                               fontSize: 12,
-                              fontWeight: isCheckedIn
+                              fontWeight: isCheckedIn && dayScore > 0
                                   ? FontWeight.bold
                                   : FontWeight.normal,
                             ),
@@ -1460,6 +1475,42 @@ class DashboardPageState extends ConsumerState<DashboardPage> {
                 }
               },
             ),
+          ),
+          
+          // 热力图图例
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                '少',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 10,
+                ),
+              ),
+              const SizedBox(width: 4),
+              ...List.generate(5, (index) {
+                final intensity = (index + 1) / 5.0;
+                return Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 2),
+                  width: 16,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: theme.colorScheme.primary.withOpacity(intensity),
+                  ),
+                );
+              }),
+              const SizedBox(width: 4),
+              Text(
+                '多',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 10,
+                ),
+              ),
+            ],
           ),
         ],
       ),

@@ -1200,6 +1200,11 @@ class _HomePageState extends ConsumerState<HomePage> {
             }
             
             // 有日记时，显示最新的日记
+            // 检查日记是否有图片
+            final diaryHasImage = latestDiary.content.any((block) => block.type == ContentBlockType.image);
+            final firstImageBlock = diaryHasImage ? latestDiary.content.firstWhere((block) => block.type == ContentBlockType.image) : null;
+            final imagePath = firstImageBlock?.data;
+
             return GestureDetector(
               onTap: () {
                 // 导航到日记详情页面
@@ -1235,24 +1240,38 @@ class _HomePageState extends ConsumerState<HomePage> {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(16),
                       color: theme.cardTheme.color,
-                      image: const DecorationImage(
-                        image: NetworkImage('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80'),
-                        fit: BoxFit.cover,
-                        opacity: 0.7,
-                      ),
+                      // 只有日记有图片时才显示图片背景
+                      image: diaryHasImage && imagePath != null && imagePath.isNotEmpty
+                          ? DecorationImage(
+                              image: FileImage(File(imagePath)),
+                              fit: BoxFit.cover,
+                              opacity: 0.8,
+                            )
+                          : null,
                     ),
                     child: Container(
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(16),
-                        gradient: LinearGradient(
-                          begin: Alignment.bottomCenter,
-                          end: Alignment.topCenter,
-                          colors: [
-                            Colors.black.withOpacity(0.9),
-                            Colors.black.withOpacity(0.4),
-                            Colors.transparent,
-                          ],
-                        ),
+                        // 没有图片时使用渐变背景
+                        gradient: diaryHasImage
+                            ? LinearGradient(
+                                begin: Alignment.bottomCenter,
+                                end: Alignment.topCenter,
+                                colors: [
+                                  Colors.black.withOpacity(0.9),
+                                  Colors.black.withOpacity(0.4),
+                                  Colors.transparent,
+                                ],
+                              )
+                            : LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  theme.colorScheme.primary.withOpacity(0.1),
+                                  theme.colorScheme.secondary.withOpacity(0.1),
+                                  theme.colorScheme.tertiary.withOpacity(0.05),
+                                ],
+                              ),
                       ),
                     ),
                   ),

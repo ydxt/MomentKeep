@@ -116,6 +116,9 @@ class Journal extends Equatable {
   /// 题库特有字段
   final String? subject;
   final String? remarks;
+  
+  /// 心情字段 (1-5: 😢😟😐😊😄)
+  final int? mood;
 
   const Journal({
     required this.id,
@@ -128,6 +131,7 @@ class Journal extends Equatable {
     required this.updatedAt,
     this.subject,
     this.remarks,
+    this.mood,
   });
 
   Journal copyWith({
@@ -141,6 +145,7 @@ class Journal extends Equatable {
     DateTime? updatedAt,
     String? subject,
     String? remarks,
+    int? mood,
   }) {
     return Journal(
       id: id ?? this.id,
@@ -153,11 +158,12 @@ class Journal extends Equatable {
       updatedAt: updatedAt ?? this.updatedAt,
       subject: subject ?? this.subject,
       remarks: remarks ?? this.remarks,
+      mood: mood ?? this.mood,
     );
   }
 
   @override
-  List<Object> get props => [
+  List<Object?> get props => [
         id,
         categoryId,
         title,
@@ -166,6 +172,9 @@ class Journal extends Equatable {
         date,
         createdAt,
         updatedAt,
+        subject,
+        remarks,
+        mood,
       ];
 
   /// 转换为JSON
@@ -181,6 +190,7 @@ class Journal extends Equatable {
       'updatedAt': updatedAt.toIso8601String(),
       'subject': subject,
       'remarks': remarks,
+      'mood': mood,
     };
   }
 
@@ -193,29 +203,18 @@ class Journal extends Equatable {
       content: (json['content'] as List<dynamic>? ?? [])
           .map((blockJson) {
             if (blockJson is Map<String, dynamic>) {
-              final contentBlock = ContentBlock.fromJson(blockJson);
-              // 如果id为空，生成一个唯一id
-              return contentBlock.id.isNotEmpty 
-                  ? contentBlock 
-                  : contentBlock.copyWith(
-                      id: 'block_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1000)}',
-                    );
+              return ContentBlock.fromJson(blockJson);
             }
-            // 忽略无效的内容块
-            return ContentBlock(
-              id: 'block_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(1000)}',
-              type: ContentBlockType.text,
-              data: '',
-              orderIndex: 0,
-            );
+            return ContentBlock(id: '', type: ContentBlockType.text, data: '', orderIndex: 0);
           })
           .toList(),
       tags: List<String>.from(json['tags'] ?? []),
-      date: DateTime.tryParse(json['date'] ?? '') ?? DateTime.now(),
-      createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
-      updatedAt: DateTime.tryParse(json['updatedAt'] ?? '') ?? DateTime.now(),
+      date: json['date'] != null ? DateTime.parse(json['date']) : DateTime.now(),
+      createdAt: json['createdAt'] != null ? DateTime.parse(json['createdAt']) : DateTime.now(),
+      updatedAt: json['updatedAt'] != null ? DateTime.parse(json['updatedAt']) : DateTime.now(),
       subject: json['subject'],
       remarks: json['remarks'],
+      mood: json['mood'],
     );
   }
 }

@@ -7,6 +7,7 @@ import 'package:moment_keep/domain/entities/diary.dart';
 import 'package:moment_keep/domain/entities/recycle_bin.dart';
 import 'package:moment_keep/presentation/blocs/recycle_bin_bloc.dart';
 import 'package:moment_keep/services/database_service.dart';
+import 'package:moment_keep/core/services/countdown_service.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -111,11 +112,14 @@ class HabitError extends HabitState {
 class HabitBloc extends Bloc<HabitEvent, HabitState> {
   /// 回收箱BLoC
   final RecycleBinBloc recycleBinBloc;
-  
+
   /// 数据库服务
   final DatabaseService _databaseService;
 
-  HabitBloc(this.recycleBinBloc) : 
+  /// 倒计时服务（用于通知调度）
+  final CountdownService _countdownService = CountdownService();
+
+  HabitBloc(this.recycleBinBloc) :
         _databaseService = DatabaseService(),
         super(HabitInitial()) {
     on<LoadHabits>(_onLoadHabits);
@@ -141,6 +145,41 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
       await prefs.setString('habits', habitsJson);
     } catch (e) {
       print('保存习惯数据失败: $e');
+    }
+  }
+
+  /// 为习惯调度通知
+  Future<void> _scheduleHabitNotification(Habit habit) async {
+    try {
+      // 检查是否有提醒时间
+      if (habit.reminderTime != null) {
+        final time = habit.reminderTime!;
+        final habitId = int.tryParse(habit.id) ?? habit.id.hashCode;
+        
+        await _countdownService.setHabitReminder(
+          habitId: habitId,
+          habitName: habit.name,
+          hour: time.hour,
+          minute: time.minute,
+          daysOfWeek: habit.reminderDays.isNotEmpty 
+              ? habit.reminderDays 
+              : null, // null 表示每天
+        );
+        print('习惯提醒已设置: ${habit.name} at ${time.hour}:${time.minute.toString().padLeft(2, '0')}');
+      }
+    } catch (e) {
+      print('设置习惯提醒失败: $e');
+    }
+  }
+
+  /// 取消习惯通知
+  Future<void> _cancelHabitNotification(String habitId) async {
+    try {
+      final id = int.tryParse(habitId) ?? habitId.hashCode;
+      await _countdownService.cancelHabitReminder(id);
+      print('习惯提醒已取消: $habitId');
+    } catch (e) {
+      print('取消习惯提醒失败: $e');
     }
   }
 
@@ -240,6 +279,14 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
     try {
       // 从SharedPreferences加载习惯数据
       _habits = await _loadHabitsFromStorage();
+      
+      // 为所有有提醒时间的习惯重新调度通知
+      for (final habit in _habits) {
+        if (habit.reminderTime != null) {
+          await _scheduleHabitNotification(habit);
+        }
+      }
+      
       emit(HabitLoaded(List.from(_habits)));
     } catch (e) {
       emit(HabitError('加载习惯失败'));
@@ -265,6 +312,9 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
 
     // 保存到SharedPreferences
     await _saveHabitsToStorage();
+
+    // 调度通知
+    await _scheduleHabitNotification(event.habit);
 
     // 直接使用更新后的原始数据创建新状态
     emit(HabitLoaded(List.from(_habits)));
@@ -294,6 +344,10 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
     // 保存到SharedPreferences
     await _saveHabitsToStorage();
 
+    // 重新调度通知
+    await _cancelHabitNotification(event.habit.id);
+    await _scheduleHabitNotification(event.habit);
+
     // 直接使用更新后的原始数据创建新状态
     emit(HabitLoaded(List.from(_habits)));
   }
@@ -315,6 +369,9 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
         deletedAt: DateTime.now(),
       );
       recycleBinBloc.add(AddToRecycleBin(recycleBinItem));
+
+      // 取消通知
+      await _cancelHabitNotification(event.habitId);
 
       // 更新原始数据
       _habits.removeAt(habitIndex);

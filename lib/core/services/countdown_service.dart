@@ -1,4 +1,6 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest.dart' as tz;
 
 /// 倒计时与提醒服务
 class CountdownService {
@@ -23,6 +25,9 @@ class CountdownService {
     if (_isInitialized) {
       return;
     }
+
+    // 初始化时区数据
+    tz.initializeTimeZones();
 
     // Android 通知设置
     const AndroidInitializationSettings initializationSettingsAndroid =
@@ -209,21 +214,93 @@ class CountdownService {
     }
   }
 
-  /// 为习惯设置提醒
+  /// 为习惯设置每日重复提醒
   Future<void> setHabitReminder({
     required int habitId,
     required String habitName,
     required int hour,
     required int minute,
+    List<int>? daysOfWeek, // 1=周一, 7=周日
   }) async {
-    await scheduleDailyNotification(
-      id: habitId,
-      title: '习惯提醒',
-      body: '该完成「$habitName」习惯了！',
-      hour: hour,
-      minute: minute,
-      payload: 'habit:$habitId',
+    await initialize();
+
+    // 取消旧的提醒
+    await cancelHabitReminder(habitId);
+
+    // Android 通知详情
+    const AndroidNotificationDetails androidNotificationDetails =
+        AndroidNotificationDetails(
+      'habit_reminder_channel',
+      '习惯提醒',
+      channelDescription: '用于提醒用户完成习惯的通知',
+      importance: Importance.max,
+      priority: Priority.high,
+      ticker: 'ticker',
+      playSound: true,
+      enableVibration: true,
     );
+
+    const DarwinNotificationDetails iosNotificationDetails =
+        DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    );
+
+    const NotificationDetails notificationDetails = NotificationDetails(
+      android: androidNotificationDetails,
+      iOS: iosNotificationDetails,
+    );
+
+    // 如果没有指定星期几，默认每天都提醒
+    final days = daysOfWeek ?? [1, 2, 3, 4, 5, 6, 7];
+
+    // 为每个指定的星期几创建每周重复的通知
+    for (final dayOfWeek in days) {
+      // 使用 dayOfWeek 作为通知 ID 的一部分，确保每个星期的提醒有唯一 ID
+      final notificationId = habitId * 10 + dayOfWeek;
+
+      try {
+        // 使用 zonedSchedule 实现每周固定时间提醒（所有参数都是命名参数）
+        await _flutterLocalNotificationsPlugin.zonedSchedule(
+          id: notificationId,
+          title: '💪 习惯提醒',
+          body: '该完成「$habitName」习惯了！坚持就是胜利！',
+          scheduledDate: _nextInstanceOfDayOfWeekAndTime(dayOfWeek, hour, minute),
+          notificationDetails: notificationDetails,
+          androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+          matchDateTimeComponents: DateTimeComponents.dayOfWeekAndTime,
+          payload: 'habit:$habitId',
+        );
+      } catch (e) {
+        print('设置习惯提醒失败 (day=$dayOfWeek): $e');
+      }
+    }
+  }
+
+  /// 获取下次指定星期几和时间的实例
+  tz.TZDateTime _nextInstanceOfDayOfWeekAndTime(
+      int dayOfWeek, int hour, int minute) {
+    final tz.TZDateTime now = tz.TZDateTime.now(tz.local);
+    tz.TZDateTime scheduledDate = tz.TZDateTime(
+      tz.local,
+      now.year,
+      now.month,
+      now.day,
+      hour,
+      minute,
+    );
+
+    // 计算距离下次指定星期几的天数
+    int daysUntilTarget = dayOfWeek - now.weekday;
+    if (daysUntilTarget < 0 ||
+        (daysUntilTarget == 0 &&
+            (now.hour > hour || (now.hour == hour && now.minute >= minute)))) {
+      daysUntilTarget += 7;
+    }
+
+    scheduledDate = scheduledDate.add(Duration(days: daysUntilTarget));
+    return scheduledDate;
   }
 
   /// 取消习惯提醒

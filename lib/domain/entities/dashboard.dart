@@ -41,7 +41,10 @@ class Dashboard extends Equatable {
   
   /// 打卡历史数据（日期: 打卡状态）
   final Set<String> checkInHistory;
-  
+
+  /// 每日打卡平均分数（日期: 平均分数 1-5）
+  final Map<String, double> dailyCheckInScores;
+
   /// 待办统计数据
   
   /// 总待办数
@@ -103,6 +106,7 @@ class Dashboard extends Equatable {
     this.scoreTrendData = const {},
     this.habitScoreTrendData = const {},
     this.checkInHistory = const {},
+    this.dailyCheckInScores = const {},
     this.totalTodos = 0,
     this.completedTodos = 0,
     this.todoCompletionRate = 0.0,
@@ -134,6 +138,7 @@ class Dashboard extends Equatable {
     Map<String, double>? scoreTrendData,
     Map<String, Map<String, double>>? habitScoreTrendData,
     Set<String>? checkInHistory,
+    Map<String, double>? dailyCheckInScores,
     int? totalTodos,
     int? completedTodos,
     double? todoCompletionRate,
@@ -154,18 +159,19 @@ class Dashboard extends Equatable {
       totalHabits: totalHabits ?? this.totalHabits,
       completedHabits: completedHabits ?? this.completedHabits,
       completionRate: completionRate ?? this.completionRate,
-      completedDaysThisWeek: 
+      completedDaysThisWeek:
           completedDaysThisWeek ?? this.completedDaysThisWeek,
-      completedDaysThisMonth: 
+      completedDaysThisMonth:
           completedDaysThisMonth ?? this.completedDaysThisMonth,
       totalCheckIns: totalCheckIns ?? this.totalCheckIns,
       streakDays: streakDays ?? this.streakDays,
       dailyActivityData: dailyActivityData ?? this.dailyActivityData,
-      categoryCompletionRates: 
+      categoryCompletionRates:
           categoryCompletionRates ?? this.categoryCompletionRates,
       scoreTrendData: scoreTrendData ?? this.scoreTrendData,
       habitScoreTrendData: habitScoreTrendData ?? this.habitScoreTrendData,
       checkInHistory: checkInHistory ?? this.checkInHistory,
+      dailyCheckInScores: dailyCheckInScores ?? this.dailyCheckInScores,
       totalTodos: totalTodos ?? this.totalTodos,
       completedTodos: completedTodos ?? this.completedTodos,
       todoCompletionRate: todoCompletionRate ?? this.todoCompletionRate,
@@ -198,6 +204,7 @@ class Dashboard extends Equatable {
         scoreTrendData,
         habitScoreTrendData,
         checkInHistory,
+        dailyCheckInScores,
         totalTodos,
         completedTodos,
         todoCompletionRate,

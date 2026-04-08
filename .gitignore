@@ -1,76 +1,115 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
-
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
-.idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
-
 # Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
 .dart_tool/
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
 /build/
 /coverage/
+**/doc/api/
+**/ios/Flutter/.last_build_id
 
-# Symbolication related
-app.*.symbols
+# Generated code
+*.g.dart
+*.freezed.dart
+*.generated.dart
+*.gr.dart
+*.mocks.dart
 
-# Obfuscation related
-app.*.map.json
+# IDE files
+.idea/
+*.iml
+*.ipr
+*.iws
 
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
+# VS Code (can be included if team shares settings)
+.vscode/
+
+# AI/Editor tools
+.codebuddy/
+.qwen/
+.trae/
+.cursor/
+.windsurf/
+
+# Build artifacts
+android/app/build/
+android/build/
+windows/*/runner/Debug/
+windows/*/runner/Release/
+linux/flutter/ephemeral/
+macos/Build/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Server and uploads
+server/uploads/
+server/moment_keep.db
+server/__pycache__/
+
+# Generated analysis files
+analyze_output.txt
+flutter_history.txt
+*.log
+*.pid
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+*.bak
+*.backup
 
 # Environment variables
 .env
 .env.local
 .env.*.local
 
-# Backup files
-*.bak
-*.backup
-
-# Windows thumbnail cache
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# Server related
-server/moment_keep.db
-server/__pycache__/
-
-
 # Compressed files
 *.zip
 *.rar
 *.7z
 
-# Log files
-logs/
-*.log
+# Documentation that should be in docs/
+BUGFIX_REPORT.md
+DOCUMENTATION_INDEX.md
+FEATURES_SUMMARY.md
+KNOWN_ISSUES_FIXED.md
+TESTING_AND_PROJECT_MANAGEMENT.md
+COMPLETE_ANALYSIS_SUMMARY.md
+DRAWING_FEATURE_CORRECTION.md
+FEATURES_COMPLETION_SUMMARY.md
+FINAL_COMPLETE_REPORT.md
+FINAL_IMPLEMENTATION_REPORT.md
+IMPLEMENTATION_PLAN.md
+IMPLEMENTATION_PROGRESS.md
+NEW_FEATURES_USAGE_GUIDE.md
+TECHNICAL_IMPLEMENTATION_GUIDE.md
+UI_UX_DESIGN_GUIDE.md
+ULTIMATE_COMPLETION_REPORT.md
 
-# Windows command history
-*.history
+# Backup directories in docs/
+docs/数据存放策略/
+docs/积分明细功能增强/
+docs/checkbox_insert_fix/
+
+# Symbols and maps
+app.*.symbols
+app.*.map.json
+
+# Android specific
+/android/app/debug
+/android/app/profile
+/android/app/release

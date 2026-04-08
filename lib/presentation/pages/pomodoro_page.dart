@@ -1,12 +1,11 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:moment_keep/domain/entities/category.dart';
-import 'package:moment_keep/presentation/blocs/category_bloc.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:intl/intl.dart';
 import 'package:moment_keep/presentation/blocs/pomodoro_bloc.dart';
 import 'package:moment_keep/services/database_service.dart';
 
@@ -45,7 +44,6 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
   String _selectedAudio = 'default'; // 选中的音频
   bool _isStatsExpanded = false;
   bool _isFocusMode = true; // 波动开关：true=专注模式，false=休息模式
-  int _duration = 25; // 合并的时长设置
   int _focusDuration = 25; // 默认25分钟专注
   int _restDuration = 5; // 默认5分钟休息
   int _focusSeconds = 0; // 默认0秒专注
@@ -86,6 +84,15 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
     'averageDuration': 0,
     'interruptions': 0,
   };
+
+  // 历史趋势数据
+  List<Map<String, dynamic>> _historyTrendData = [];
+  Map<int, int> _hourlyDistribution = {};
+  Map<String, int> _completionVsInterruption = {};
+  bool _isLoadingHistory = false;
+
+  // 时间范围选择
+  String _selectedTimeRange = 'week'; // 'week', 'month', 'year'
 
   @override
   void initState() {
@@ -248,6 +255,136 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
     }
   }
 
+  /// 加载历史趋势数据
+  Future<void> _loadHistoryTrendData() async {
+    setState(() {
+      _isLoadingHistory = true;
+    });
+
+    try {
+      final dbService = DatabaseService();
+      final db = await dbService.database;
+
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      
+      // 根据选择的时间范围计算起始日期
+      int days;
+      switch (_selectedTimeRange) {
+        case 'week':
+          days = 7;
+          break;
+        case 'month':
+          days = 30;
+          break;
+        case 'year':
+          days = 365;
+          break;
+        default:
+          days = 7;
+      }
+
+      final startDate = today.subtract(Duration(days: days - 1));
+      final startTime = startDate.millisecondsSinceEpoch;
+      final endTime = today.add(const Duration(days: 1)).millisecondsSinceEpoch - 1;
+
+      // 查询时间范围内的数据
+      final recordsResult = await db.rawQuery('''
+        SELECT 
+          start_time,
+          duration_minutes,
+          state,
+          is_completed,
+          notes
+        FROM pomodoro_records
+        WHERE start_time >= ? AND start_time <= ?
+          AND is_completed = 1
+        ORDER BY start_time ASC
+      ''', [startTime, endTime]);
+
+      // 按日期分组统计
+      final dailyData = <String, Map<String, dynamic>>{};
+      final hourlyDist = <int, int>{};
+      int completedCount = 0;
+      int interruptedCount = 0;
+
+      for (final record in recordsResult) {
+        final startTime_ms = record['start_time'] as int;
+        final recordDate = DateTime.fromMillisecondsSinceEpoch(startTime_ms);
+        final dateStr = DateFormat('yyyy-MM-dd').format(recordDate);
+        final durationMinutes = (record['duration_minutes'] as num?)?.toInt() ?? 0;
+        final state = record['state'] as String? ?? '';
+        final notes = record['notes'] as String? ?? '';
+        final isInterrupted = notes == '暂停';
+
+        // 每日统计
+        if (!dailyData.containsKey(dateStr)) {
+          dailyData[dateStr] = {
+            'date': dateStr,
+            'focusCount': 0,
+            'restCount': 0,
+            'focusDuration': 0,
+            'restDuration': 0,
+            'interruptions': 0,
+          };
+        }
+
+        if (state == 'focusing') {
+          dailyData[dateStr]!['focusCount'] = (dailyData[dateStr]!['focusCount'] as int) + 1;
+          dailyData[dateStr]!['focusDuration'] = (dailyData[dateStr]!['focusDuration'] as int) + (durationMinutes * 60);
+          if (isInterrupted) {
+            dailyData[dateStr]!['interruptions'] = (dailyData[dateStr]!['interruptions'] as int) + 1;
+            interruptedCount++;
+          } else {
+            completedCount++;
+          }
+        } else if (state == 'resting') {
+          dailyData[dateStr]!['restCount'] = (dailyData[dateStr]!['restCount'] as int) + 1;
+          dailyData[dateStr]!['restDuration'] = (dailyData[dateStr]!['restDuration'] as int) + (durationMinutes * 60);
+        }
+
+        // 小时分布统计
+        final hour = recordDate.hour;
+        hourlyDist[hour] = (hourlyDist[hour] ?? 0) + 1;
+      }
+
+      // 填充缺失的日期
+      final trendData = <Map<String, dynamic>>[];
+      for (int i = 0; i < days; i++) {
+        final date = startDate.add(Duration(days: i));
+        final dateStr = DateFormat('yyyy-MM-dd').format(date);
+        
+        if (!dailyData.containsKey(dateStr)) {
+          dailyData[dateStr] = {
+            'date': dateStr,
+            'focusCount': 0,
+            'restCount': 0,
+            'focusDuration': 0,
+            'restDuration': 0,
+            'interruptions': 0,
+          };
+        }
+        
+        trendData.add(dailyData[dateStr]!);
+      }
+
+      setState(() {
+        _historyTrendData = trendData;
+        _hourlyDistribution = hourlyDist;
+        _completionVsInterruption = {
+          'completed': completedCount,
+          'interrupted': interruptedCount,
+        };
+        _isLoadingHistory = false;
+      });
+    } catch (e) {
+      print('Error loading history trend data: $e');
+      setState(() {
+        _isLoadingHistory = false;
+      });
+    }
+  }
+
   /// 格式化时长为时分格式
   String _formatDuration(int seconds) {
     final hours = seconds ~/ 3600;
@@ -356,11 +493,105 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
     super.dispose();
   }
 
+  /// 显示时间设置对话框
+  void _showDurationSettingsDialog(BuildContext context) {
+    int tempFocusDuration = _focusDuration;
+    int tempRestDuration = _restDuration;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('⏱️ 设置时长'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 专注时长
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('专注时长（分钟）:'),
+                      DropdownButton<int>(
+                        value: tempFocusDuration,
+                        items: List.generate(61, (index) {
+                          return DropdownMenuItem<int>(
+                            value: index,
+                            child: Text('$index'),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() {
+                              tempFocusDuration = value;
+                            });
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  // 休息时长
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('休息时长（分钟）:'),
+                      DropdownButton<int>(
+                        value: tempRestDuration,
+                        items: List.generate(31, (index) {
+                          return DropdownMenuItem<int>(
+                            value: index,
+                            child: Text('$index'),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() {
+                              tempRestDuration = value;
+                            });
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('取消'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      _focusDuration = tempFocusDuration;
+                      _restDuration = tempRestDuration;
+                    });
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('已设置：专注 $tempFocusDuration 分钟，休息 $tempRestDuration 分钟'),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                  child: const Text('确定'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   /// 显示时间选择对话框
+  // ignore: unused_element
   void _showTimePicker(BuildContext context, {bool selectMinutes = false, bool selectSeconds = false}) {
     // 确定当前模式（专注或休息）
     final isFocusMode = _isFocusMode;
-    
+
     // 获取当前设置的时间
     int currentMinutes = isFocusMode ? _focusDuration : _restDuration;
     int currentSeconds = 0; // 默认秒为0
@@ -532,6 +763,12 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
               foregroundColor: theme.appBarTheme.foregroundColor,
               elevation: theme.appBarTheme.elevation,
               actions: [
+                // ⏰ 时间设置按钮
+                IconButton(
+                  icon: const Icon(Icons.timer_outlined),
+                  tooltip: '设置专注/休息时长',
+                  onPressed: () => _showDurationSettingsDialog(context),
+                ),
                 // 设置菜单
                 PopupMenuButton<String>(
                   onSelected: (value) {
@@ -1921,7 +2158,7 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                                         if (!isRunning) {
                                           setState(() {
                                             _isFocusMode = true;
-                                            _duration = _focusDuration;
+                                            // _duration 字段已移除，这里不需要赋值
                                           });
                                         }
                                       },
@@ -1963,7 +2200,7 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                                         if (!isRunning) {
                                           setState(() {
                                             _isFocusMode = false;
-                                            _duration = _restDuration;
+                                            // _duration 字段已移除，这里不需要赋值
                                           });
                                         }
                                       },
@@ -2679,7 +2916,11 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                               begin: 20,
                               duration: const Duration(milliseconds: 300),
                               delay: const Duration(milliseconds: 200)),
-                    ],
+                    
+                    // 可视化图表区域
+                    const SizedBox(height: 20),
+                    _buildVisualizationCharts(),
+                  ],
                   ),
                 );
               }
@@ -2769,6 +3010,652 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
             ),
         ],
       ),
+    );
+  }
+
+  /// 构建可视化图表区域
+  Widget _buildVisualizationCharts() {
+    final theme = ref.watch(currentThemeProvider);
+    
+    // 首次加载时获取历史数据
+    if (_historyTrendData.isEmpty && !_isLoadingHistory) {
+      _loadHistoryTrendData();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 时间范围选择器
+        _buildTimeRangeSelector(theme),
+        const SizedBox(height: 20),
+        
+        // 专注时长趋势图
+        _buildFocusTrendChart(theme),
+        const SizedBox(height: 20),
+        
+        // 专注时段分布图
+        _buildHourlyDistributionChart(theme),
+        const SizedBox(height: 20),
+        
+        // 完成效率饼图
+        _buildCompletionPieChart(theme),
+      ],
+    );
+  }
+
+  /// 构建时间范围选择器
+  Widget _buildTimeRangeSelector(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline,
+          width: 1,
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _buildTimeRangeButton('周', 'week', theme),
+          _buildTimeRangeButton('月', 'month', theme),
+          _buildTimeRangeButton('年', 'year', theme),
+        ],
+      ),
+    );
+  }
+
+  /// 构建时间范围按钮
+  Widget _buildTimeRangeButton(String label, String value, ThemeData theme) {
+    final isSelected = _selectedTimeRange == value;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            _selectedTimeRange = value;
+          });
+          _loadHistoryTrendData();
+        },
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: isSelected ? theme.colorScheme.primary : theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isSelected ? theme.colorScheme.primary : theme.colorScheme.outline,
+              width: 1,
+            ),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 构建专注时长趋势图
+  Widget _buildFocusTrendChart(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline,
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.trending_up,
+                size: 18,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '专注时长趋势',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (_isLoadingHistory)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (_historyTrendData.isEmpty)
+            SizedBox(
+              height: 200,
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.bar_chart,
+                      size: 48,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '暂无专注数据',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 250,
+              child: LineChart(
+                LineChartData(
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: true,
+                    horizontalInterval: 1800,
+                    verticalInterval: 1,
+                    getDrawingHorizontalLine: (value) {
+                      return FlLine(
+                        color: theme.colorScheme.outline.withOpacity(0.2),
+                        strokeWidth: 1,
+                      );
+                    },
+                    getDrawingVerticalLine: (value) {
+                      return FlLine(
+                        color: theme.colorScheme.outline.withOpacity(0.2),
+                        strokeWidth: 1,
+                      );
+                    },
+                  ),
+                  titlesData: FlTitlesData(
+                    show: true,
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 30,
+                        interval: 1,
+                        getTitlesWidget: (value, meta) {
+                          final index = value.toInt();
+                          if (index >= 0 && index < _historyTrendData.length) {
+                            final dateStr = _historyTrendData[index]['date'] as String;
+                            final date = DateTime.parse(dateStr);
+                            return Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Text(
+                                '${date.month}/${date.day}',
+                                style: TextStyle(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            );
+                          }
+                          return const Text('');
+                        },
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 50,
+                        interval: 1800,
+                        getTitlesWidget: (value, meta) {
+                          final minutes = (value / 60).round();
+                          return Text(
+                            '${minutes}m',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 10,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  borderData: FlBorderData(
+                    show: true,
+                    border: Border.all(
+                      color: theme.colorScheme.outline,
+                      width: 1,
+                    ),
+                  ),
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: _historyTrendData.asMap().entries.map((entry) {
+                        return FlSpot(
+                          entry.key.toDouble(),
+                          (entry.value['focusDuration'] as int).toDouble(),
+                        );
+                      }).toList(),
+                      isCurved: true,
+                      curveSmoothness: 0.3,
+                      color: theme.colorScheme.primary,
+                      barWidth: 3,
+                      dotData: const FlDotData(show: true),
+                      belowBarData: BarAreaData(
+                        show: true,
+                        gradient: LinearGradient(
+                          colors: [
+                            theme.colorScheme.primary.withOpacity(0.3),
+                            theme.colorScheme.primary.withOpacity(0.05),
+                          ],
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                        ),
+                      ),
+                    ),
+                  ],
+                  lineTouchData: LineTouchData(
+                    touchTooltipData: LineTouchTooltipData(
+                      getTooltipItems: (touchedSpots) {
+                        return touchedSpots.map((spot) {
+                          final index = spot.x.toInt();
+                          if (index >= 0 && index < _historyTrendData.length) {
+                            final data = _historyTrendData[index];
+                            final focusMinutes = (data['focusDuration'] as int) ~/ 60;
+                            return LineTooltipItem(
+                              '${data['date']}\n专注: ${focusMinutes}分钟',
+                              TextStyle(
+                                color: theme.colorScheme.onSurfaceVariant,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            );
+                          }
+                          return null;
+                        }).toList();
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建专注时段分布图
+  Widget _buildHourlyDistributionChart(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline,
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.schedule,
+                size: 18,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '专注时段分布',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (_isLoadingHistory)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (_hourlyDistribution.isEmpty)
+            SizedBox(
+              height: 200,
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.pie_chart_outline,
+                      size: 48,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '暂无分布数据',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 250,
+              child: BarChart(
+                BarChartData(
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: true,
+                    horizontalInterval: 5,
+                    getDrawingHorizontalLine: (value) {
+                      return FlLine(
+                        color: theme.colorScheme.outline.withOpacity(0.2),
+                        strokeWidth: 1,
+                      );
+                    },
+                    getDrawingVerticalLine: (value) {
+                      return FlLine(
+                        color: theme.colorScheme.outline.withOpacity(0.2),
+                        strokeWidth: 1,
+                      );
+                    },
+                  ),
+                  titlesData: FlTitlesData(
+                    show: true,
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 30,
+                        getTitlesWidget: (value, meta) {
+                          final hour = value.toInt();
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              '$hour',
+                              style: TextStyle(
+                                color: theme.colorScheme.onSurfaceVariant,
+                                fontSize: 10,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 30,
+                        interval: 5,
+                        getTitlesWidget: (value, meta) {
+                          return Text(
+                            value.toInt().toString(),
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 10,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  borderData: FlBorderData(
+                    show: true,
+                    border: Border.all(
+                      color: theme.colorScheme.outline,
+                      width: 1,
+                    ),
+                  ),
+                  barGroups: _hourlyDistribution.entries
+                      .where((entry) => entry.value > 0)
+                      .map((entry) {
+                    return BarChartGroupData(
+                      x: entry.key,
+                      barRods: [
+                        BarChartRodData(
+                          toY: entry.value.toDouble(),
+                          color: theme.colorScheme.secondary,
+                          width: 16,
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(4),
+                          ),
+                        ),
+                      ],
+                    );
+                  }).toList(),
+                  barTouchData: BarTouchData(
+                    touchTooltipData: BarTouchTooltipData(
+                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                        return BarTooltipItem(
+                          '${group.x}:00 - ${group.x + 1}:00\n${rod.toY.toInt()} 次专注',
+                          TextStyle(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建完成效率饼图
+  Widget _buildCompletionPieChart(ThemeData theme) {
+    final completed = _completionVsInterruption['completed'] ?? 0;
+    final interrupted = _completionVsInterruption['interrupted'] ?? 0;
+    final total = completed + interrupted;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline,
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.check_circle_outline,
+                size: 18,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '专注效率',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (_isLoadingHistory)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (total == 0)
+            SizedBox(
+              height: 200,
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.pie_chart_outline,
+                      size: 48,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '暂无效率数据',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Row(
+              children: [
+                // 饼图
+                Expanded(
+                  flex: 2,
+                  child: SizedBox(
+                    height: 200,
+                    child: PieChart(
+                      PieChartData(
+                        sectionsSpace: 2,
+                        centerSpaceRadius: 40,
+                        sections: [
+                          PieChartSectionData(
+                            value: completed.toDouble(),
+                            title: '${total > 0 ? (completed / total * 100).toStringAsFixed(1) : 0}%',
+                            color: const Color(0xFF2A9D8F),
+                            radius: 60,
+                            titleStyle: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          PieChartSectionData(
+                            value: interrupted.toDouble(),
+                            title: '${total > 0 ? (interrupted / total * 100).toStringAsFixed(1) : 0}%',
+                            color: const Color(0xFFE76F51),
+                            radius: 60,
+                            titleStyle: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                // 图例
+                Expanded(
+                  flex: 1,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildLegendItem(
+                        const Color(0xFF2A9D8F),
+                        '完成',
+                        completed,
+                        theme,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildLegendItem(
+                        const Color(0xFFE76F51),
+                        '中断',
+                        interrupted,
+                        theme,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        '总计: $total',
+                        style: TextStyle(
+                          color: theme.colorScheme.onSurface,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建图例项
+  Widget _buildLegendItem(Color color, String label, int count, ThemeData theme) {
+    return Row(
+      children: [
+        Container(
+          width: 16,
+          height: 16,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: theme.colorScheme.onSurface,
+              fontSize: 12,
+            ),
+          ),
+        ),
+        Text(
+          '$count',
+          style: TextStyle(
+            color: theme.colorScheme.onSurface,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
     );
   }
 }

@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
 import 'package:moment_keep/domain/entities/diary.dart';
+import 'package:moment_keep/domain/entities/subtask.dart';
 
 /// 待办事项优先级枚举
 enum TodoPriority {
@@ -43,6 +44,9 @@ class Todo extends Equatable {
   final double? longitude;
   final double? radius;
   final String? locationName;
+  
+  /// 子任务列表
+  final List<Subtask> subtasks;
 
   const Todo({
     required this.id,
@@ -67,6 +71,7 @@ class Todo extends Equatable {
     this.longitude,
     this.radius = 100.0,
     this.locationName,
+    this.subtasks = const [],
   });
 
   Todo copyWith({
@@ -92,6 +97,7 @@ class Todo extends Equatable {
     double? longitude,
     double? radius,
     String? locationName,
+    List<Subtask>? subtasks,
   }) {
     return Todo(
       id: id ?? this.id,
@@ -116,11 +122,12 @@ class Todo extends Equatable {
       longitude: longitude ?? this.longitude,
       radius: radius ?? this.radius,
       locationName: locationName ?? this.locationName,
+      subtasks: subtasks ?? this.subtasks,
     );
   }
 
   @override
-  List<Object> get props => [
+  List<Object?> get props => [
         id,
         categoryId,
         title,
@@ -133,7 +140,21 @@ class Todo extends Equatable {
         repeatType,
         repeatInterval,
         isLocationReminderEnabled,
+        subtasks,
       ];
+
+  /// 计算子任务进度
+  double get subtaskProgress =>
+      subtasks.isEmpty ? 0.0 : subtasks.where((s) => s.isCompleted).length / subtasks.length;
+
+  /// 已完成的子任务数量
+  int get completedSubtasks => subtasks.where((s) => s.isCompleted).length;
+
+  /// 总子任务数量
+  int get totalSubtasks => subtasks.length;
+
+  /// 是否有子任务
+  bool get hasSubtasks => subtasks.isNotEmpty;
 
   /// 转换为JSON
   Map<String, dynamic> toJson() {
@@ -160,6 +181,7 @@ class Todo extends Equatable {
       'longitude': longitude,
       'radius': radius,
       'locationName': locationName,
+      'subtasks': subtasks.map((s) => s.toJson()).toList(),
     };
   }
 
@@ -208,6 +230,11 @@ class Todo extends Equatable {
       longitude: json.containsKey('longitude') ? json['longitude'] : null,
       radius: json.containsKey('radius') ? json['radius'] : 100.0,
       locationName: json.containsKey('locationName') ? json['locationName'] : null,
+      subtasks: json.containsKey('subtasks') && json['subtasks'] is List
+          ? (json['subtasks'] as List)
+              .map((s) => Subtask.fromJson(s as Map<String, dynamic>))
+              .toList()
+          : [],
     );
   }
 }
