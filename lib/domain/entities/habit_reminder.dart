@@ -108,6 +108,50 @@ class HabitReminder extends Equatable {
         createdAt,
         updatedAt,
       ];
+
+  /// 转换为 JSON
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'habitId': habitId,
+      'time': {'hour': time.hour, 'minute': time.minute},
+      'isEnabled': isEnabled,
+      'isGeofenceEnabled': isGeofenceEnabled,
+      'latitude': latitude,
+      'longitude': longitude,
+      'radius': radius,
+      'geofenceName': geofenceName,
+      'isSmartTimeEnabled': isSmartTimeEnabled,
+      'repeatDays': repeatDays,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+    };
+  }
+
+  /// 从 JSON 创建 HabitReminder
+  factory HabitReminder.fromJson(Map<String, dynamic> json) {
+    final timeData = json['time'] as Map<String, dynamic>;
+    return HabitReminder(
+      id: json['id'],
+      habitId: json['habitId'],
+      time: TimeOfDay(
+        hour: timeData['hour'] as int,
+        minute: timeData['minute'] as int,
+      ),
+      isEnabled: json['isEnabled'] ?? true,
+      isGeofenceEnabled: json['isGeofenceEnabled'] ?? false,
+      latitude: json['latitude'],
+      longitude: json['longitude'],
+      radius: json['radius'],
+      geofenceName: json['geofenceName'],
+      isSmartTimeEnabled: json['isSmartTimeEnabled'] ?? false,
+      repeatDays: json['repeatDays'] != null
+          ? List<bool>.from(json['repeatDays'])
+          : [true, true, true, true, true, false, false],
+      createdAt: DateTime.parse(json['createdAt']),
+      updatedAt: DateTime.parse(json['updatedAt']),
+    );
+  }
 }
 
 /// 智能时段推荐实体类
@@ -175,4 +219,37 @@ class SmartTimeRecommendation extends Equatable {
         createdAt,
         updatedAt,
       ];
+
+  /// 转换为 JSON
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'habitId': habitId,
+      'recommendedTime': {
+        'hour': recommendedTime.hour,
+        'minute': recommendedTime.minute,
+      },
+      'score': score,
+      'reason': reason,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+    };
+  }
+
+  /// 从 JSON 创建 SmartTimeRecommendation
+  factory SmartTimeRecommendation.fromJson(Map<String, dynamic> json) {
+    final timeData = json['recommendedTime'] as Map<String, dynamic>;
+    return SmartTimeRecommendation(
+      id: json['id'],
+      habitId: json['habitId'],
+      recommendedTime: TimeOfDay(
+        hour: timeData['hour'] as int,
+        minute: timeData['minute'] as int,
+      ),
+      score: json['score'] as int,
+      reason: json['reason'],
+      createdAt: DateTime.parse(json['createdAt']),
+      updatedAt: DateTime.parse(json['updatedAt']),
+    );
+  }
 }

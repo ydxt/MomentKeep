@@ -17,6 +17,7 @@ import 'package:moment_keep/presentation/pages/user_info_page.dart';
 import 'package:moment_keep/core/utils/theme_manager.dart';
 import 'package:moment_keep/core/theme/app_theme.dart';
 import 'package:moment_keep/core/theme/theme_provider.dart';
+import 'package:moment_keep/presentation/pages/import_export_page.dart';
 
 
 class NewSettingsPage extends ConsumerStatefulWidget {
@@ -659,6 +660,26 @@ class _NewSettingsPageState extends ConsumerState<NewSettingsPage> {
                   _SettingsSection(
                     title: '其他',
                     children: [
+                      // 数据导入导出
+                      _SettingsItem(
+                        icon: Icons.cloud_sync,
+                        iconColor: Colors.teal,
+                        title: '数据导入导出',
+                        subtitle: '备份和恢复您的数据',
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const ImportExportPage(),
+                            ),
+                          );
+                        },
+                        trailing: const Icon(
+                          Icons.chevron_right,
+                          color: Colors.grey,
+                          size: 20,
+                        ),
+                      ),
                       // 帮助与反馈
                       _SettingsItem(
                         icon: Icons.help,

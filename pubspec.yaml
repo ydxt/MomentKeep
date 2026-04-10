@@ -147,6 +147,9 @@ dependencies:
 
   open_file: ^3.5.11
   image_cropper: ^11.0.0
+
+  # 分享功能
+  share_plus: ^10.1.2
   
   # 图片缓存和加载优化
   cached_network_image: ^3.4.1
