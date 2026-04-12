@@ -38,7 +38,13 @@ class HabitDetailDialog extends ConsumerStatefulWidget {
 class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
   /// 当前选中的日期范围
   DateRange _selectedDateRange = DateRange.last7Days;
-  
+
+  /// 图表显示模式：'trend' (分数趋势) 或 'record' (打卡记录)
+  String _chartMode = 'trend';
+
+  /// 选中的图标代码
+  late String _selectedIconCode;
+
   /// 习惯名称控制器
   late TextEditingController _nameController;
   
@@ -65,9 +71,17 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
   
   /// 卡片主题色
   late int _cardColor;
-  
+
   /// 是否已修改
   bool _isModified = false;
+
+  // 新增字段状态
+  late HabitType _habitType;
+  late String _selectedIcon;
+  late ScoringMode _scoringMode;
+  late int _targetDays;
+  late int _customCycleDays;
+  late int _cycleRewardPoints;
   
   @override
   void initState() {
@@ -77,7 +91,8 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
     _nameController = TextEditingController(text: widget.habit.name);
     _contentBlocks = List.from(widget.habit.content);
     _frequency = widget.habit.frequency;
-    _selectedDays = List.from(widget.habit.reminderDays);
+    // 兼容旧数据：将 0 或 -1 (周日) 修正为 7
+    _selectedDays = widget.habit.reminderDays.map((d) => (d == 0 || d == -1) ? 7 : d).toList();
     _fullStars = widget.habit.fullStars;
     _isReminderEnabled = widget.habit.reminderTime != null;
     _reminderTime = widget.habit.reminderTime != null 
@@ -86,6 +101,18 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
     _selectedCategoryId = widget.habit.categoryId;
     _cardColor = widget.habit.color;
     
+    // 初始化图标
+    _selectedIconCode = widget.habit.icon;
+
+    // 初始化新增字段
+    _habitType = widget.habit.type;
+    _selectedIcon = widget.habit.icon;
+    _scoringMode = widget.habit.scoringMode;
+    _targetDays = widget.habit.targetDays;
+    _customCycleDays = widget.habit.customCycleDays;
+    // 兼容旧数据：如果 cycleRewardPoints 为 0，则默认为 fullStars
+    _cycleRewardPoints = widget.habit.cycleRewardPoints > 0 ? widget.habit.cycleRewardPoints : widget.habit.fullStars;
+
     // 初始化日期筛选器状态
     _selectedDateLabel = '最近一周';
     _endDate = DateTime.now();
@@ -121,11 +148,11 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
       content: _contentBlocks,
       categoryId: selectedCategory.id,
       category: selectedCategory.name,
-      icon: selectedCategory.icon,
+      icon: _selectedIconCode, // 使用新选择的图标
       color: _cardColor,
       frequency: _frequency,
       reminderDays: _selectedDays,
-      reminderTime: _isReminderEnabled 
+      reminderTime: _isReminderEnabled
           ? DateTime(
               now.year,
               now.month,
@@ -136,6 +163,12 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
           : null,
       fullStars: _fullStars,
       updatedAt: now,
+      // 新增字段保存
+      type: _habitType,
+      scoringMode: _scoringMode,
+      targetDays: _targetDays,
+      customCycleDays: _customCycleDays,
+      cycleRewardPoints: _cycleRewardPoints,
     );
     
     // 发送更新事件
@@ -286,13 +319,13 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildDayButton(-1, '一', theme),
-                  _buildDayButton(1, '二', theme),
-                  _buildDayButton(2, '三', theme),
-                  _buildDayButton(3, '四', theme),
-                  _buildDayButton(4, '五', theme),
-                  _buildDayButton(5, '六', theme),
-                  _buildDayButton(0, '日', theme),
+                  _buildDayButton(1, '一', theme),
+                  _buildDayButton(2, '二', theme),
+                  _buildDayButton(3, '三', theme),
+                  _buildDayButton(4, '四', theme),
+                  _buildDayButton(5, '五', theme),
+                  _buildDayButton(6, '六', theme),
+                  _buildDayButton(7, '日', theme),
                 ],
               ),
             const SizedBox(height: 16),
@@ -393,7 +426,246 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
               ),
             ),
             const SizedBox(height: 16),
-            
+
+            // 图标设置
+            Container(
+              padding: const EdgeInsets.all(16.0),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceVariant,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: theme.colorScheme.outline,
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: Color(_cardColor).withOpacity(0.15),
+                        ),
+                        child: Icon(
+                          IconData(int.parse(_selectedIconCode), fontFamily: 'MaterialIcons'),
+                          color: Color(_cardColor),
+                          size: 24,
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '习惯图标',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurface,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            '点击更换图标',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  TextButton(
+                    onPressed: _showIconPicker,
+                    child: const Text('更换'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // 习惯类型选择
+            Container(
+              padding: const EdgeInsets.all(16.0),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceVariant,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: theme.colorScheme.outline,
+                  width: 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: theme.colorScheme.surface,
+                        ),
+                        child: Center(
+                          child: Icon(
+                            _habitType == HabitType.positive ? Icons.add_circle : Icons.remove_circle,
+                            color: _habitType == HabitType.positive ? theme.colorScheme.primary : theme.colorScheme.error,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '习惯类型',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurface,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            _habitType == HabitType.positive ? '完成后获得积分' : '发生后扣除积分',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      _buildTypeButton(HabitType.positive, theme),
+                      const SizedBox(width: 12),
+                      _buildTypeButton(HabitType.negative, theme),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // 计分规则
+            Container(
+              padding: const EdgeInsets.all(16.0),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceVariant,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: theme.colorScheme.outline,
+                  width: 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: theme.colorScheme.surface,
+                        ),
+                        child: Center(
+                          child: Icon(
+                            Icons.score,
+                            color: theme.colorScheme.primary,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '计分规则',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurface,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            '设置打卡获得积分的规则',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // 计分模式下拉框
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: theme.colorScheme.outline,
+                        width: 1,
+                      ),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<ScoringMode>(
+                        isExpanded: true,
+                        value: _scoringMode,
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              _scoringMode = value;
+                              _isModified = true;
+                              if (value == ScoringMode.daily) {
+                                _targetDays = 1;
+                              }
+                            });
+                          }
+                        },
+                        items: ScoringMode.values.map((mode) {
+                          return DropdownMenuItem(
+                            value: mode,
+                            child: Text(mode.displayName),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                  if (_scoringMode == ScoringMode.custom) ...[
+                    const SizedBox(height: 12),
+                    _buildNumberInputRow('周期天数', _customCycleDays, (val) {
+                      setState(() { _customCycleDays = val; _isModified = true; });
+                    }, '天', theme),
+                  ],
+                  if (_scoringMode != ScoringMode.daily) ...[
+                    const SizedBox(height: 12),
+                    _buildNumberInputRow('达标天数', _targetDays, (val) {
+                      setState(() { _targetDays = val; _isModified = true; });
+                    }, '天', theme),
+                    const SizedBox(height: 12),
+                    _buildNumberInputRow('达标奖励', _cycleRewardPoints, (val) {
+                      setState(() { _cycleRewardPoints = val; _isModified = true; });
+                    }, '分', theme),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
             // 提醒设置
             Container(
               padding: const EdgeInsets.all(16.0),
@@ -546,7 +818,93 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
       ),
     );
   }
-  
+
+  /// 构建习惯类型按钮
+  Widget _buildTypeButton(HabitType type, ThemeData theme) {
+    final isSelected = _habitType == type;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            _habitType = type;
+            _isModified = true;
+          });
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            color: isSelected
+                ? (type == HabitType.positive ? theme.colorScheme.primary : theme.colorScheme.error)
+                : theme.colorScheme.surface,
+            border: Border.all(
+              color: isSelected
+                  ? Colors.transparent
+                  : (type == HabitType.positive ? theme.colorScheme.primary : theme.colorScheme.error),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                type == HabitType.positive ? Icons.add_circle : Icons.remove_circle,
+                color: isSelected ? theme.colorScheme.onPrimary : (type == HabitType.positive ? theme.colorScheme.primary : theme.colorScheme.error),
+                size: 18,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                type == HabitType.positive ? '加分项' : '减分项',
+                style: TextStyle(
+                  color: isSelected ? theme.colorScheme.onPrimary : (type == HabitType.positive ? theme.colorScheme.primary : theme.colorScheme.error),
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 构建数字输入行
+  Widget _buildNumberInputRow(String label, int value, Function(int) onChanged, String suffix, ThemeData theme) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: theme.colorScheme.onSurface,
+              fontSize: 13,
+            ),
+          ),
+        ),
+        SizedBox(
+          width: 100,
+          child: TextField(
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 14),
+            decoration: InputDecoration(
+              suffixText: suffix,
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            controller: TextEditingController(text: value.toString()),
+            onChanged: (val) {
+              final n = int.tryParse(val);
+              if (n != null && n > 0) onChanged(n);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
   /// 构建频率选择按钮
   Widget _buildFrequencyButton(String label, HabitFrequency frequency, ThemeData theme) {
     final isSelected = _frequency == frequency;
@@ -724,21 +1082,38 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 统计信息标题
-          Text(
-            '统计信息',
-            style: TextStyle(
-              color: theme.colorScheme.onSurface,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '统计信息',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              // 视图切换按钮
+              Container(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: theme.colorScheme.outline, width: 1),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildViewChip('trend', '趋势图', Icons.show_chart, theme),
+                    const SizedBox(width: 8),
+                    _buildViewChip('record', '打卡记录', Icons.calendar_today, theme),
+                  ],
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
-          
-          // 日期筛选器
-          _buildDateFilter(theme),
-          const SizedBox(height: 24),
-          
+
           // 统计卡片
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -762,10 +1137,47 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
             ],
           ),
           const SizedBox(height: 24),
-          
-          // 打卡分数趋势图
-          _buildTrendChart(theme),
+
+          // 日期筛选器
+          _buildDateFilter(theme),
+          const SizedBox(height: 16),
+
+          // 根据模式显示不同视图
+          if (_chartMode == 'trend')
+            _buildTrendChart(theme)
+          else
+            _buildCheckInHeatmap(theme),
         ],
+      ),
+    );
+  }
+
+  /// 构建视图切换 Chip
+  Widget _buildViewChip(String mode, String label, IconData icon, ThemeData theme) {
+    final isSelected = _chartMode == mode;
+    return GestureDetector(
+      onTap: () => setState(() => _chartMode = mode),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? theme.colorScheme.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: isSelected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurfaceVariant),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: isSelected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1153,6 +1565,111 @@ class _HabitDetailDialogState extends ConsumerState<HabitDetailDialog> {
     
     return dates;
   }
+
+  /// 显示图标选择器
+  void _showIconPicker() {
+    final popularIcons = [
+      Icons.fitness_center, Icons.directions_run, Icons.pool, Icons.sports_basketball,
+      Icons.self_improvement, Icons.monitor_heart, Icons.water_drop, Icons.spa,
+      Icons.local_dining, Icons.restaurant, Icons.local_cafe, Icons.school, Icons.book,
+      Icons.work, Icons.code, Icons.nights_stay, Icons.alarm, Icons.cleaning_services,
+      Icons.emoji_events, Icons.star, Icons.favorite, Icons.thumb_up, Icons.mood,
+      Icons.wallet, Icons.savings, Icons.psychology, Icons.yard,
+    ];
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        final t = Theme.of(ctx);
+        return AlertDialog(
+          title: const Text('选择图标'),
+          content: SizedBox(
+            width: double.maxFinite, height: 400,
+            child: GridView.count(
+              crossAxisCount: 6, crossAxisSpacing: 12, mainAxisSpacing: 12,
+              children: popularIcons.map((iconData) {
+                final isSelected = _selectedIconCode == iconData.codePoint.toString();
+                return GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _selectedIconCode = iconData.codePoint.toString();
+                      _isModified = true;
+                    });
+                    Navigator.pop(ctx);
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: isSelected ? t.colorScheme.primaryContainer : Colors.grey[100],
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: isSelected ? t.colorScheme.primary : Colors.transparent, width: 2),
+                    ),
+                    child: Icon(iconData, color: isSelected ? t.colorScheme.primary : Colors.grey[700], size: 28),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 构建打卡热力图
+  Widget _buildCheckInHeatmap(ThemeData theme) {
+    final now = DateTime.now();
+    final days = List.generate(30, (i) => now.subtract(Duration(days: 29 - i)));
+    final checkedInDays = <String>{};
+    for (var r in widget.habit.checkInRecords) {
+      checkedInDays.add(DateTime(r.timestamp.year, r.timestamp.month, r.timestamp.day).toIso8601String().split('T')[0]);
+    }
+    final historyDates = widget.habit.history.map((e) {
+      try { return DateTime.parse(e); } catch(e) { return null; }
+    }).whereType<DateTime>().toSet();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('最近 30 天打卡', style: TextStyle(color: theme.colorScheme.onSurfaceVariant, fontSize: 13, fontWeight: FontWeight.w500)),
+            Row(children: [
+              _buildDot(Colors.green.shade400), const SizedBox(width: 4), Text('已打卡', style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant)),
+              const SizedBox(width: 12), _buildDot(Colors.grey.shade300), const SizedBox(width: 4), Text('未打卡', style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant)),
+            ]),
+          ],
+        ),
+        const SizedBox(height: 12),
+        GridView.builder(
+          shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 7, crossAxisSpacing: 6, mainAxisSpacing: 6, childAspectRatio: 0.85),
+          itemCount: 30,
+          itemBuilder: (context, index) {
+            final date = days[index];
+            final dateStr = date.toIso8601String().split('T')[0];
+            final isCheckedIn = historyDates.any((d) => d.toIso8601String().split('T')[0] == dateStr) || checkedInDays.contains(dateStr);
+            final isFuture = date.isAfter(now);
+            final isToday = dateStr == DateTime(now.year, now.month, now.day).toIso8601String().split('T')[0];
+            return Container(
+              decoration: BoxDecoration(
+                color: isFuture ? Colors.transparent : (isCheckedIn ? Colors.green.shade400 : Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(6),
+                border: isToday ? Border.all(color: theme.colorScheme.primary, width: 2) : null,
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text('${date.day}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: isFuture ? Colors.transparent : (isCheckedIn ? Colors.white : Colors.grey.shade600))),
+                  Padding(padding: const EdgeInsets.only(top: 2), child: Text(['日','一','二','三','四','五','六'][date.weekday % 7], style: TextStyle(fontSize: 8, color: isCheckedIn ? Colors.white70 : Colors.grey.shade500))),
+                ],
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDot(Color color) => Container(width: 8, height: 8, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)));
 }
 
 /// 交互式趋势图组件

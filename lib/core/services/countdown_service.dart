@@ -41,11 +41,20 @@ class CountdownService {
       requestSoundPermission: true,
     );
 
+    // Windows 通知设置
+    const WindowsInitializationSettings initializationSettingsWindows =
+        WindowsInitializationSettings(
+      appName: '拾光记',
+      appUserModelId: 'MomentKeep.App',
+      guid: 'b2c26e85-6e3f-4a5a-8e7a-1a2b3c4d5e6f',
+    );
+
     // 初始化设置
     const InitializationSettings initializationSettings =
         InitializationSettings(
       android: initializationSettingsAndroid,
       iOS: initializationSettingsIOS,
+      windows: initializationSettingsWindows,
     );
 
     // 初始化通知插件
@@ -86,10 +95,15 @@ class CountdownService {
       presentSound: true,
     );
 
+    // Windows 通知详情
+    const WindowsNotificationDetails windowsNotificationDetails =
+        WindowsNotificationDetails();
+
     // 通知详情
     const NotificationDetails notificationDetails = NotificationDetails(
       android: androidNotificationDetails,
       iOS: iosNotificationDetails,
+      windows: windowsNotificationDetails,
     );
 
     // 显示通知
@@ -134,10 +148,15 @@ class CountdownService {
       presentSound: true,
     );
 
+    // Windows 通知详情
+    const WindowsNotificationDetails windowsNotificationDetails =
+        WindowsNotificationDetails();
+
     // 通知详情
     const NotificationDetails notificationDetails = NotificationDetails(
       android: androidNotificationDetails,
       iOS: iosNotificationDetails,
+      windows: windowsNotificationDetails,
     );
 
     // 简化实现：直接显示通知，不使用定时功能
@@ -247,13 +266,20 @@ class CountdownService {
       presentSound: true,
     );
 
+    // Windows 通知详情
+    const WindowsNotificationDetails windowsNotificationDetails =
+        WindowsNotificationDetails();
+
     const NotificationDetails notificationDetails = NotificationDetails(
       android: androidNotificationDetails,
       iOS: iosNotificationDetails,
+      windows: windowsNotificationDetails,
     );
 
     // 如果没有指定星期几，默认每天都提醒
-    final days = daysOfWeek ?? [1, 2, 3, 4, 5, 6, 7];
+    final days = (daysOfWeek ?? [1, 2, 3, 4, 5, 6, 7])
+        .where((d) => d >= 1 && d <= 7)
+        .toList(); // 过滤无效的天 (如 0 或 -1)
 
     // 为每个指定的星期几创建每周重复的通知
     for (final dayOfWeek in days) {

@@ -28,14 +28,22 @@ class PushNotificationService {
         requestSoundPermission: true,
       );
 
+      const windowsSettings = WindowsInitializationSettings(
+        appName: '拾光记',
+        appUserModelId: 'MomentKeep.App',
+        guid: 'b2c26e85-6e3f-4a5a-8e7a-1a2b3c4d5e6f', // 示例 GUID
+      );
+
       const initializationSettings = InitializationSettings(
         android: androidSettings,
         iOS: iosSettings,
+        windows: windowsSettings,
       );
 
       await _localNotifications.initialize(
-        initializationSettings,
+        settings: initializationSettings,
         onDidReceiveNotificationResponse: _onNotificationTapped,
+        onDidReceiveBackgroundNotificationResponse: _onNotificationTapped,
       );
 
       _isInitialized = true;
@@ -80,16 +88,19 @@ class PushNotificationService {
         presentSound: true,
       );
 
+      const windowsDetails = WindowsNotificationDetails();
+
       final details = NotificationDetails(
         android: androidDetails,
         iOS: iosDetails,
+        windows: windowsDetails,
       );
 
       await _localNotifications.show(
-        id,
-        title,
-        body,
-        details,
+        id: id,
+        title: title,
+        body: body,
+        notificationDetails: details,
         payload: payload,
       );
 
@@ -207,7 +218,7 @@ class PushNotificationService {
 
   /// 取消指定通知
   Future<void> cancelNotification(int id) async {
-    await _localNotifications.cancel(id);
+    await _localNotifications.cancel(id: id);
   }
 
   /// 取消所有通知

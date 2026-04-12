@@ -64,24 +64,30 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
   
   /// 满星数
   late int _fullStars;
-  
+
   /// 提醒开关
   late bool _isReminderEnabled;
-  
+
   /// 提醒时间
   late TimeOfDay _reminderTime;
-  
+
   /// 选中的分类ID
   late String? _selectedCategoryId;
-  
+
   /// 卡片主题色
   late int _cardColor;
-  
+
   /// 选中的图标
   late String _selectedIcon;
-  
+
   /// 习惯类型
   late HabitType _habitType;
+
+  // 计分周期规则
+  late ScoringMode _scoringMode;       // 计分模式（按天/按周/自定义）
+  late int _targetDays;                // 周期内目标打卡天数
+  late int _customCycleDays;           // 自定义周期天数
+  late int _cycleRewardPoints;         // 周期达标奖励积分
 
   @override
   void initState() {
@@ -95,7 +101,8 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
       _nameController = TextEditingController(text: habit.name);
       _contentBlocks = List.from(habit.content);
       _frequency = habit.frequency;
-      _selectedDays = List.from(habit.reminderDays);
+      // 兼容旧数据：将 0 或 -1 (周日) 修正为 7
+      _selectedDays = habit.reminderDays.map((d) => (d == 0 || d == -1) ? 7 : d).toList();
       _fullStars = habit.fullStars;
       _isReminderEnabled = habit.reminderTime != null;
       _reminderTime = habit.reminderTime != null 
@@ -105,6 +112,13 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
       _cardColor = habit.color;
       _selectedIcon = _getValidIconValue(habit.icon);
       _habitType = habit.type;
+
+      // 初始化计分周期
+      _scoringMode = habit.scoringMode;
+      _targetDays = habit.targetDays;
+      _customCycleDays = habit.customCycleDays;
+      // 如果奖励分是 0（旧数据），则使用 fullStars
+      _cycleRewardPoints = habit.cycleRewardPoints > 0 ? habit.cycleRewardPoints : habit.fullStars;
     } else {
       // 添加模式：使用默认值初始化
       _nameController = TextEditingController();
@@ -122,6 +136,12 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
         _selectedIcon = Icons.fitness_center.codePoint.toString();
       }
       _habitType = HabitType.positive;
+
+      // 初始化计分周期默认值
+      _scoringMode = ScoringMode.daily; // 默认每天计分
+      _targetDays = 1;
+      _customCycleDays = 7;
+      _cycleRewardPoints = _fullStars; // 默认奖励分等于满星数
     }
   }
 
@@ -256,7 +276,7 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
     final now = DateTime.now();
     
     // 创建或更新习惯
-    final habit = widget.habit != null 
+    final habit = widget.habit != null
         ? widget.habit!.copyWith(
             name: _nameController.text,
             content: _contentBlocks,
@@ -266,7 +286,7 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
             color: _cardColor,
             frequency: _frequency,
             reminderDays: _selectedDays,
-            reminderTime: _isReminderEnabled 
+            reminderTime: _isReminderEnabled
                 ? DateTime(
                     now.year,
                     now.month,
@@ -278,6 +298,10 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
             fullStars: _fullStars,
             updatedAt: now,
             type: _habitType,
+            scoringMode: _scoringMode,
+            targetDays: _targetDays,
+            customCycleDays: _customCycleDays,
+            cycleRewardPoints: _cycleRewardPoints,
           )
         : Habit(
             id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -289,7 +313,7 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
             color: _cardColor,
             frequency: _frequency,
             reminderDays: _selectedDays,
-            reminderTime: _isReminderEnabled 
+            reminderTime: _isReminderEnabled
                 ? DateTime(
                     now.year,
                     now.month,
@@ -309,6 +333,10 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
             fullStars: _fullStars,
             notes: '',
             type: _habitType,
+            scoringMode: _scoringMode,
+            targetDays: _targetDays,
+            customCycleDays: _customCycleDays,
+            cycleRewardPoints: _cycleRewardPoints,
           );
     
     // 根据是否是编辑模式发送不同的事件
@@ -522,13 +550,13 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildDayButton(-1, '一', theme),
-                  _buildDayButton(1, '二', theme),
-                  _buildDayButton(2, '三', theme),
-                  _buildDayButton(3, '四', theme),
-                  _buildDayButton(4, '五', theme),
-                  _buildDayButton(5, '六', theme),
-                  _buildDayButton(0, '日', theme),
+                  _buildDayButton(1, '一', theme),
+                  _buildDayButton(2, '二', theme),
+                  _buildDayButton(3, '三', theme),
+                  _buildDayButton(4, '四', theme),
+                  _buildDayButton(5, '五', theme),
+                  _buildDayButton(6, '六', theme),
+                  _buildDayButton(7, '日', theme),
                 ],
               ),
             const SizedBox(height: 24),
@@ -640,7 +668,226 @@ class _AddHabitViewState extends ConsumerState<AddHabitView> {
               ),
             ),
             const SizedBox(height: 16),
-            
+
+            // 计分规则
+            Container(
+              padding: const EdgeInsets.all(16.0),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceVariant,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: theme.colorScheme.outline,
+                  width: 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 40,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          color: theme.colorScheme.surfaceVariant,
+                        ),
+                        child: Center(
+                          child: Icon(
+                            Icons.score,
+                            color: theme.colorScheme.primary,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '计分规则',
+                            style: TextStyle(
+                              color: theme.colorScheme.onBackground,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            '设置打卡获得积分的规则',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // 计分模式下拉框
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: theme.colorScheme.outline,
+                        width: 1,
+                      ),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<ScoringMode>(
+                        isExpanded: true,
+                        value: _scoringMode,
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() {
+                              _scoringMode = value;
+                              // 如果切换到每天，重置其他值
+                              if (value == ScoringMode.daily) {
+                                _targetDays = 1;
+                              }
+                            });
+                          }
+                        },
+                        items: ScoringMode.values.map((mode) {
+                          return DropdownMenuItem(
+                            value: mode,
+                            child: Text(mode.displayName),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                  // 自定义天数输入 (仅在自定义模式下显示)
+                  if (_scoringMode == ScoringMode.custom) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '周期天数:',
+                            style: TextStyle(
+                              color: theme.colorScheme.onBackground,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 100,
+                          child: TextField(
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(fontSize: 14),
+                            decoration: InputDecoration(
+                              suffixText: '天',
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            controller: TextEditingController(
+                                text: _customCycleDays.toString()),
+                            onChanged: (val) {
+                              final days = int.tryParse(val);
+                              if (days != null && days > 0) {
+                                setState(() {
+                                  _customCycleDays = days;
+                                });
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  // 目标天数设置 (非每天模式下显示)
+                  if (_scoringMode != ScoringMode.daily)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '达标天数:',
+                            style: TextStyle(
+                              color: theme.colorScheme.onBackground,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 100,
+                          child: TextField(
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(fontSize: 14),
+                            decoration: InputDecoration(
+                              suffixText: '天',
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            controller: TextEditingController(
+                                text: _targetDays.toString()),
+                            onChanged: (val) {
+                              final days = int.tryParse(val);
+                              if (days != null && days > 0) {
+                                setState(() {
+                                  _targetDays = days;
+                                });
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  const SizedBox(height: 12),
+                  // 奖励积分设置 (非每天模式下显示)
+                  if (_scoringMode != ScoringMode.daily)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '达标奖励:',
+                            style: TextStyle(
+                              color: theme.colorScheme.onBackground,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 100,
+                          child: TextField(
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(fontSize: 14),
+                            decoration: InputDecoration(
+                              suffixText: '分',
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            controller: TextEditingController(
+                                text: _cycleRewardPoints.toString()),
+                            onChanged: (val) {
+                              final points = int.tryParse(val);
+                              if (points != null && points >= 0) {
+                                setState(() {
+                                  _cycleRewardPoints = points;
+                                });
+                              }
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
             // 习惯类型选择
             Container(
               padding: const EdgeInsets.all(16.0),

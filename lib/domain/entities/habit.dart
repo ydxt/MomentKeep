@@ -16,6 +16,26 @@ enum HabitType {
   negative,
 }
 
+/// 计分模式枚举
+enum ScoringMode {
+  daily,    // 每天计分（打卡即得分，分数=用户选的星星数）
+  weekly,   // 按周计分（周期内达标目标天数得奖励分）
+  custom,   // 自定义周期计分（自定义天数周期内达标得奖励分）
+}
+
+extension ScoringModeExtension on ScoringMode {
+  String get displayName {
+    switch (this) {
+      case ScoringMode.daily:
+        return '每天计分';
+      case ScoringMode.weekly:
+        return '按周计分';
+      case ScoringMode.custom:
+        return '自定义周期';
+    }
+  }
+}
+
 /// HabitType 扩展方法
 extension HabitTypeExtension on HabitType {
   /// 获取显示名称
@@ -73,6 +93,13 @@ class Habit extends Equatable {
   final int fullStars;
   final String notes;
   final HabitType type;
+  
+  // 计分周期相关字段
+  final ScoringMode scoringMode;       // 计分模式
+  final int targetDays;                // 周期内目标打卡天数
+  final int customCycleDays;           // 自定义周期天数（仅当 scoringMode == custom 时有效）
+  final int cycleRewardPoints;         // 周期达标奖励积分（默认等于 fullStars）
+  final DateTime? lastCycleRewardTime; // 上次获得周期奖励的时间（用于判断是否已发奖）
 
   const Habit({
     required this.id,
@@ -96,6 +123,11 @@ class Habit extends Equatable {
     this.fullStars = 5,
     this.notes = '',
     this.type = HabitType.positive,
+    this.scoringMode = ScoringMode.daily,
+    this.targetDays = 1,
+    this.customCycleDays = 7,
+    this.cycleRewardPoints = 0, // 0 表示默认使用 fullStars
+    this.lastCycleRewardTime,
   });
 
   Habit copyWith({
@@ -120,6 +152,11 @@ class Habit extends Equatable {
     int? fullStars,
     String? notes,
     HabitType? type,
+    ScoringMode? scoringMode,
+    int? targetDays,
+    int? customCycleDays,
+    int? cycleRewardPoints,
+    DateTime? lastCycleRewardTime,
   }) {
     return Habit(
       id: id ?? this.id,
@@ -143,11 +180,16 @@ class Habit extends Equatable {
       fullStars: fullStars ?? this.fullStars,
       notes: notes ?? this.notes,
       type: type ?? this.type,
+      scoringMode: scoringMode ?? this.scoringMode,
+      targetDays: targetDays ?? this.targetDays,
+      customCycleDays: customCycleDays ?? this.customCycleDays,
+      cycleRewardPoints: cycleRewardPoints ?? this.cycleRewardPoints,
+      lastCycleRewardTime: lastCycleRewardTime ?? this.lastCycleRewardTime,
     );
   }
 
   @override
-  List<Object> get props => [
+  List<Object?> get props => [
         id,
         categoryId,
         category,
@@ -165,6 +207,11 @@ class Habit extends Equatable {
         fullStars,
         notes,
         type,
+        scoringMode,
+        targetDays,
+        customCycleDays,
+        cycleRewardPoints,
+        lastCycleRewardTime,
       ];
 
   /// 转换为JSON
@@ -192,6 +239,11 @@ class Habit extends Equatable {
       'fullStars': fullStars,
       'notes': notes,
       'type': type.toString().split('.').last,
+      'scoringMode': scoringMode.toString().split('.').last,
+      'targetDays': targetDays,
+      'customCycleDays': customCycleDays,
+      'cycleRewardPoints': cycleRewardPoints,
+      'lastCycleRewardTime': lastCycleRewardTime?.toIso8601String(),
     };
   }
 
@@ -208,8 +260,31 @@ class Habit extends Equatable {
     }
   }
 
+  /// 解析计分模式（向后兼容）
+  static ScoringMode _parseScoringMode(dynamic value) {
+    if (value == null) return ScoringMode.daily;
+    try {
+      return ScoringMode.values.firstWhere(
+        (e) => e.toString().split('.').last == value,
+        orElse: () => ScoringMode.daily,
+      );
+    } catch (e) {
+      return ScoringMode.daily;
+    }
+  }
+
   /// 从JSON创建Habit
   factory Habit.fromJson(Map<String, dynamic> json) {
+    // 向后兼容：如果是旧数据，没有 scoringMode，则默认 daily
+    final scoringMode = _parseScoringMode(json['scoringMode']);
+    final targetDays = json['targetDays'] ?? 1;
+    final customCycleDays = json['customCycleDays'] ?? 7;
+    // 如果 cycleRewardPoints 为 0 或不存在，默认等于 fullStars
+    final int fullStarsVal = json['fullStars'] ?? 5;
+    final int cycleRewardPoints = (json['cycleRewardPoints'] ?? 0) == 0 
+        ? fullStarsVal 
+        : json['cycleRewardPoints'];
+
     return Habit(
       id: json['id'],
       categoryId: json['categoryId'],
@@ -240,9 +315,16 @@ class Habit extends Equatable {
       tags: List<String>.from(json['tags'] ?? []),
       createdAt: DateTime.parse(json['createdAt']),
       updatedAt: DateTime.parse(json['updatedAt']),
-      fullStars: json['fullStars'],
+      fullStars: fullStarsVal,
       notes: json['notes'] ?? '',
       type: _parseHabitType(json['type']),
+      scoringMode: scoringMode,
+      targetDays: targetDays,
+      customCycleDays: customCycleDays,
+      cycleRewardPoints: cycleRewardPoints,
+      lastCycleRewardTime: json['lastCycleRewardTime'] != null
+          ? DateTime.parse(json['lastCycleRewardTime'])
+          : null,
     );
   }
 }

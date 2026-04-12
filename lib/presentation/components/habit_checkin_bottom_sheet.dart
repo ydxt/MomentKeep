@@ -140,6 +140,10 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
               if (widget.category != null)
                 _buildCategoryChip(widget.category!, isPC),
 
+              // 周期计分进度提示
+              if (widget.habit.scoringMode != ScoringMode.daily)
+                _buildCycleProgressIndicator(isPC),
+
               SizedBox(height: isPC ? 40 : 32),
 
               // 评分标题
@@ -525,6 +529,102 @@ class _HabitCheckInBottomSheetState extends State<HabitCheckInBottomSheet>
           fontSize: isPC ? 16 : 14,
           fontWeight: FontWeight.w600,
         ),
+      ),
+    );
+  }
+
+  /// 构建周期计分进度指示器
+  Widget _buildCycleProgressIndicator(bool isPC) {
+    final habit = widget.habit;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final isTodayChecked = habit.history.contains(today.toIso8601String().split('T')[0]);
+
+    // 计算周期开始时间（逻辑需与 Bloc 一致）
+    DateTime cycleStart;
+    if (habit.scoringMode == ScoringMode.weekly) {
+      final weekday = now.weekday; // 1 = Monday
+      cycleStart = today.subtract(Duration(days: weekday - 1));
+    } else {
+      final daysSinceCreation = now.difference(habit.createdAt).inDays;
+      final cycleIndex = daysSinceCreation ~/ habit.customCycleDays;
+      cycleStart = habit.createdAt.add(Duration(days: cycleIndex * habit.customCycleDays));
+    }
+
+    // 强制归一化周期开始时间为 00:00:00
+    cycleStart = DateTime(cycleStart.year, cycleStart.month, cycleStart.day);
+
+    // 统计周期内打卡次数
+    final recordsInCycle = habit.checkInRecords.where((record) {
+      final rDate = DateTime(record.timestamp.year, record.timestamp.month, record.timestamp.day);
+      return !rDate.isBefore(cycleStart);
+    }).length;
+    final currentCount = isTodayChecked ? recordsInCycle : recordsInCycle + 1; // +1 为本次打卡
+
+    final target = habit.targetDays;
+    final progress = (currentCount / target).clamp(0.0, 1.0);
+    final remaining = target - currentCount;
+    final isCompleted = currentCount >= target;
+
+    // 检查是否已经发奖
+    final bool alreadyRewarded = habit.lastCycleRewardTime != null &&
+        (habit.lastCycleRewardTime!.isAtSameMomentAs(cycleStart) || habit.lastCycleRewardTime!.isAfter(cycleStart));
+
+    return Container(
+      margin: const EdgeInsets.only(top: 16),
+      padding: EdgeInsets.all(isPC ? 16 : 12),
+      decoration: BoxDecoration(
+        color: isCompleted ? Colors.green.withOpacity(0.1) : Colors.blue.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isCompleted ? Colors.green.withOpacity(0.3) : Colors.blue.withOpacity(0.3),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                isCompleted ? '🎉 本周期已达标！' : '🔥 周期进度',
+                style: TextStyle(
+                  color: isCompleted ? Colors.green : Colors.blue,
+                  fontSize: isPC ? 14 : 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (habit.cycleRewardPoints > 0)
+                Text(
+                  '+${habit.cycleRewardPoints} 分',
+                  style: TextStyle(
+                    color: Colors.orange,
+                    fontSize: isPC ? 14 : 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: progress,
+            backgroundColor: Colors.white.withOpacity(0.5),
+            valueColor: AlwaysStoppedAnimation<Color>(isCompleted ? Colors.green : Colors.blue),
+            minHeight: 6,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            alreadyRewarded
+                ? '本期已发奖励，下期继续努力！'
+                : (isCompleted
+                    ? '本周期已打卡 $currentCount 天，达标！'
+                    : '本周期已打卡 $currentCount 天，还差 $remaining 天获得积分'),
+            style: TextStyle(
+              color: Colors.grey[600],
+              fontSize: isPC ? 12 : 11,
+            ),
+          ),
+        ],
       ),
     );
   }

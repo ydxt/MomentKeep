@@ -88,12 +88,16 @@ class AutoCleanupService {
       ticker: 'ticker',
     );
     
-    const DarwinNotificationDetails iOSPlatformChannelSpecifics = 
+    const DarwinNotificationDetails iOSPlatformChannelSpecifics =
         DarwinNotificationDetails();
-    
+
+    const WindowsNotificationDetails windowsPlatformChannelSpecifics =
+        WindowsNotificationDetails();
+
     const NotificationDetails platformChannelSpecifics = NotificationDetails(
       android: androidPlatformChannelSpecifics,
       iOS: iOSPlatformChannelSpecifics,
+      windows: windowsPlatformChannelSpecifics,
     );
     
     await _notificationsPlugin.show(

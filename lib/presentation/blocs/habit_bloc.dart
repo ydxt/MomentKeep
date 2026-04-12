@@ -443,93 +443,146 @@ class HabitBloc extends Bloc<HabitEvent, HabitState> {
   /// 处理记录习惯完成事件
   FutureOr<void> _onRecordHabitCompletion(
       RecordHabitCompletion event, Emitter<HabitState> emit) async {
-    // 更新原始数据
     final index = _habits.indexWhere((habit) => habit.id == event.habitId);
-    if (index != -1) {
-      final habit = _habits[index];
-      final now = DateTime.now();
-      final today = now.toIso8601String().split('T')[0];
-      final isTodayChecked = habit.history.contains(today);
+    if (index == -1) return;
 
-      // 直接使用传入的分数（已经在UI层处理了正负）
-      final int finalScore = event.score;
+    final habit = _habits[index];
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day); // 归一化到今天 00:00:00
+    final todayStr = today.toIso8601String().split('T')[0];
+    final isTodayChecked = habit.history.contains(todayStr);
 
-      List<CheckInRecord> updatedCheckInRecords;
-      if (!isTodayChecked) {
-        // 如果今天还没打卡，添加新的打卡记录
-        final checkInRecord = CheckInRecord(
-          id: now.millisecondsSinceEpoch.toString(),
-          habitId: event.habitId,
-          score: finalScore,
-          comment: event.comment,
-          timestamp: now,
-          isNegative: habit.type == HabitType.negative,
-        );
-        updatedCheckInRecords = [...habit.checkInRecords, checkInRecord];
+    // --- 1. 计算当前周期的开始时间 (归一化为 00:00:00) ---
+    DateTime cycleStart;
+    int pointsAwarded = 0;
+    DateTime? newLastRewardTime = habit.lastCycleRewardTime;
+
+    if (habit.scoringMode == ScoringMode.daily) {
+      cycleStart = today;
+      pointsAwarded = event.score; // 每天模式：直接得分为用户选择的星星数
+    } else {
+      // 周期模式（按周 或 自定义）
+      if (habit.scoringMode == ScoringMode.weekly) {
+        // 按周：周期从周一开始
+        final weekday = now.weekday; // 1 = Monday, 7 = Sunday
+        cycleStart = today.subtract(Duration(days: weekday - 1));
       } else {
-        // 如果今天已经打卡，更新当天的打卡记录
-        // 注意：这里我们不使用 record.copyWith，而是创建一个新的记录，使用当前时间作为时间戳
-        // 这样可以确保新打卡的记录能够被正确匹配
-        updatedCheckInRecords = habit.checkInRecords.map((record) {
-          final recordDate = record.timestamp.toIso8601String().split('T')[0];
-          if (recordDate == today) {
-            // 更新当天的打卡记录，使用当前时间作为时间戳
-            return CheckInRecord(
-              id: now.millisecondsSinceEpoch.toString(),
-              habitId: event.habitId,
-              score: finalScore,
-              comment: event.comment,
-              timestamp: now,
-              isNegative: habit.type == HabitType.negative,
-            );
-          }
-          return record;
-        }).toList();
+        // 自定义周期：从 createdAt 日期开始推算
+        final createDate = DateTime(habit.createdAt.year, habit.createdAt.month, habit.createdAt.day);
+        final daysSinceCreation = today.difference(createDate).inDays;
+        // 如果创建时间在未来（异常数据），fallback 到今天
+        if (daysSinceCreation < 0) {
+          cycleStart = today;
+        } else {
+          final cycleIndex = daysSinceCreation ~/ habit.customCycleDays;
+          cycleStart = createDate.add(Duration(days: cycleIndex * habit.customCycleDays));
+        }
       }
 
-      // 计算连续打卡天数
-      final currentStreak = _calculateCurrentStreak(updatedCheckInRecords);
+      // 强制归一化周期开始时间为 00:00:00
+      cycleStart = DateTime(cycleStart.year, cycleStart.month, cycleStart.day);
+
+      // --- 2. 统计周期内打卡次数 ---
+      // 使用归一化的日期进行比较，避免时分秒导致的边界错误
+      final recordsInCycle = habit.checkInRecords.where((record) {
+        final rDate = DateTime(record.timestamp.year, record.timestamp.month, record.timestamp.day);
+        return !rDate.isBefore(cycleStart);
+      }).length;
+
+      // 如果今天还没打卡，本次打卡会使计数 +1
+      final currentCycleCount = isTodayChecked ? recordsInCycle : recordsInCycle + 1;
+
+      // --- 3. 判定是否达标 & 防刷 ---
+      final bool targetReached = currentCycleCount >= habit.targetDays;
       
-      // 计算总完成次数
-      final totalCompletions = updatedCheckInRecords.length;
-      
-      // 计算最佳连续打卡天数
-      int bestStreak = habit.bestStreak;
-      if (currentStreak > bestStreak) {
-        bestStreak = currentStreak;
+      // 检查本周期是否已发过奖
+      // 逻辑：如果上次发奖时间 >= 当前周期开始时间，说明本周期已处理过
+      bool cycleAlreadyRewarded = false;
+      if (habit.lastCycleRewardTime != null) {
+        final lastRewardDate = DateTime(habit.lastCycleRewardTime!.year, habit.lastCycleRewardTime!.month, habit.lastCycleRewardTime!.day);
+        if (!lastRewardDate.isBefore(cycleStart)) {
+          cycleAlreadyRewarded = true;
+        }
       }
 
-      // 更新习惯数据
-      final updatedHabit = habit.copyWith(
-        currentStreak: currentStreak,
-        totalCompletions: totalCompletions,
-        bestStreak: bestStreak,
-        history: isTodayChecked ? habit.history : [...habit.history, today],
-        checkInRecords: updatedCheckInRecords,
-        updatedAt: now,
+      if (targetReached && !cycleAlreadyRewarded) {
+        pointsAwarded = habit.cycleRewardPoints;
+        newLastRewardTime = now; // 记录发奖时间
+      } else {
+        pointsAwarded = 0;
+      }
+    }
+
+    // --- 4. 更新打卡记录 ---
+    List<CheckInRecord> updatedCheckInRecords;
+    if (!isTodayChecked) {
+      // 新增打卡
+      final checkInRecord = CheckInRecord(
+        id: now.millisecondsSinceEpoch.toString(),
+        habitId: event.habitId,
+        score: event.score, // 记录始终保存用户的主观评分（星星数）
+        comment: event.comment,
+        timestamp: now,
+        isNegative: habit.type == HabitType.negative,
       );
+      updatedCheckInRecords = [...habit.checkInRecords, checkInRecord];
+    } else {
+      // 更新今日打卡
+      updatedCheckInRecords = habit.checkInRecords.map((record) {
+        final rDate = DateTime(record.timestamp.year, record.timestamp.month, record.timestamp.day);
+        if (rDate.isAtSameMomentAs(today)) {
+          return CheckInRecord(
+            id: now.millisecondsSinceEpoch.toString(),
+            habitId: event.habitId,
+            score: event.score,
+            comment: event.comment,
+            timestamp: now,
+            isNegative: habit.type == HabitType.negative,
+          );
+        }
+        return record;
+      }).toList();
+    }
 
-      _habits[index] = updatedHabit;
+    // --- 5. 计算统计数据 ---
+    final currentStreak = _calculateCurrentStreak(updatedCheckInRecords);
+    final totalCompletions = updatedCheckInRecords.length;
+    int bestStreak = habit.bestStreak;
+    if (currentStreak > bestStreak) bestStreak = currentStreak;
 
-      // 积分相关逻辑
+    final updatedHabit = habit.copyWith(
+      currentStreak: currentStreak,
+      totalCompletions: totalCompletions,
+      bestStreak: bestStreak,
+      history: isTodayChecked ? habit.history : [...habit.history, todayStr],
+      checkInRecords: updatedCheckInRecords,
+      updatedAt: now,
+      lastCycleRewardTime: newLastRewardTime,
+    );
+
+    _habits[index] = updatedHabit;
+
+    // --- 6. 更新积分 ---
+    if (pointsAwarded != 0) {
       final prefs = await SharedPreferences.getInstance();
       final userId = prefs.getString('user_id') ?? 'default_user';
-      
-      // 记录习惯打卡积分
       final String habitTypeDesc = habit.type == HabitType.negative ? '减分项' : '加分项';
+      
+      // 减分项扣除分数，加分项增加分数
+      final double finalPoints = habit.type == HabitType.negative 
+          ? -pointsAwarded.toDouble() 
+          : pointsAwarded.toDouble();
+
       await _databaseService.updateUserPoints(
         userId,
-        finalScore.toDouble(),
+        finalPoints,
         description: '习惯打卡($habitTypeDesc): ${habit.name}',
         transactionType: 'habit_completed',
         relatedId: event.habitId,
       );
     }
 
-    // 保存到SharedPreferences
     await _saveHabitsToStorage();
-
-    // 直接使用更新后的原始数据创建新状态
     emit(HabitLoaded(List.from(_habits)));
   }
 
