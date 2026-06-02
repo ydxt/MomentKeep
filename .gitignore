@@ -1,0 +1,130 @@
+# Flutter/Dart/Pub related
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# Generated code
+*.g.dart
+*.freezed.dart
+*.generated.dart
+*.gr.dart
+*.mocks.dart
+
+# IDE files
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# VS Code (can be included if team shares settings)
+.vscode/
+
+# AI/Editor tools
+.codebuddy/
+.qwen/
+.trae/
+.cursor/
+.windsurf/
+
+# Build artifacts
+android/app/build/
+android/build/
+windows/*/runner/Debug/
+windows/*/runner/Release/
+linux/flutter/ephemeral/
+macos/Build/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Server and uploads
+server/uploads/
+server/moment_keep.db
+server/__pycache__/
+
+# Generated analysis files
+analyze_output.txt
+flutter_history.txt
+*.log
+*.pid
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+*.bak
+*.backup
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Compressed files
+*.zip
+*.rar
+*.7z
+
+# Documentation that should be in docs/
+BUGFIX_REPORT.md
+DOCUMENTATION_INDEX.md
+FEATURES_SUMMARY.md
+KNOWN_ISSUES_FIXED.md
+TESTING_AND_PROJECT_MANAGEMENT.md
+COMPLETE_ANALYSIS_SUMMARY.md
+DRAWING_FEATURE_CORRECTION.md
+FEATURES_COMPLETION_SUMMARY.md
+FINAL_COMPLETE_REPORT.md
+FINAL_IMPLEMENTATION_REPORT.md
+IMPLEMENTATION_PLAN.md
+IMPLEMENTATION_PROGRESS.md
+NEW_FEATURES_USAGE_GUIDE.md
+TECHNICAL_IMPLEMENTATION_GUIDE.md
+UI_UX_DESIGN_GUIDE.md
+ULTIMATE_COMPLETION_REPORT.md
+
+# Backup directories in docs/
+docs/待整理/
+pic/
+
+# Symbols and maps
+app.*.symbols
+app.*.map.json
+
+# Android specific
+/android/app/debug
+/android/app/profile
+/android/app/release
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/app/.cxx/
+android/**/*.iml
+
+# Server database
+server/daily_check_in.db
+server/*.db
+
+# AI tool files
+QWEN.md
+
+# Flutter plugins cache
+.flutter-plugins
+.flutter-plugins-dependencies

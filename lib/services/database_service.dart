@@ -1,0 +1,4070 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:convert';
+import 'package:flutter/foundation.dart'; // 导入完整的foundation，用于kDebugMode
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:moment_keep/core/constants/storage_keys.dart';
+import 'package:http/http.dart' as http;
+import 'package:flutter_quill/flutter_quill.dart' as flutter_quill;
+import 'package:moment_keep/domain/entities/diary.dart';
+import 'package:moment_keep/domain/entities/habit.dart';
+import 'package:moment_keep/domain/entities/todo.dart';
+import 'package:moment_keep/domain/entities/kanban_column.dart';
+import 'package:moment_keep/domain/entities/star_exchange.dart';
+// 导入以获取TargetPlatform
+import 'package:sqflite/sqflite.dart' as sqflite_package;
+import 'package:path/path.dart' as path_package;
+import 'package:path_provider/path_provider.dart';
+import 'package:moment_keep/core/utils/encryption_helper.dart';
+import 'package:moment_keep/core/services/storage_service.dart';
+import 'package:moment_keep/services/user_database_service.dart';
+import 'package:moment_keep/services/product_database_service.dart';
+import 'package:moment_keep/presentation/pages/merchant_order_management_page.dart';
+
+// 仅在非Web平台导入sqflite_common_ffi
+import 'package:sqflite_common_ffi/sqflite_ffi.dart'
+    if (dart.library.html) 'package:moment_keep/services/empty_sqflite_ffi.dart';
+
+// 定义动态类型别名以适配不同环境
+typedef DatabaseType = dynamic;
+
+// 使用简单的日志函数
+void _log(String message) {
+  if (kDebugMode) {
+    print('[DatabaseService] $message');
+  }
+}
+
+/// 网络服务类，用于与后端API通信
+class _NetworkService {
+  static const String baseUrl = 'http://localhost:6000/api';
+  static final _client = http.Client();
+
+  /// 发送GET请求
+  static Future<http.Response> get(String endpoint,
+      {Map<String, String>? queryParams}) async {
+    final uri =
+        Uri.parse('$baseUrl/$endpoint').replace(queryParameters: queryParams);
+    return await _client.get(uri, headers: _getHeaders());
+  }
+
+  /// 发送POST请求
+  static Future<http.Response> post(String endpoint,
+      {Map<String, dynamic>? body}) async {
+    final uri = Uri.parse('$baseUrl/$endpoint');
+    return await _client.post(
+      uri,
+      headers: _getHeaders(),
+      body: jsonEncode(body),
+    );
+  }
+
+  /// 发送PUT请求
+  static Future<http.Response> put(String endpoint,
+      {Map<String, dynamic>? body}) async {
+    final uri = Uri.parse('$baseUrl/$endpoint');
+    return await _client.put(
+      uri,
+      headers: _getHeaders(),
+      body: jsonEncode(body),
+    );
+  }
+
+  /// 发送DELETE请求
+  static Future<http.Response> delete(String endpoint) async {
+    final uri = Uri.parse('$baseUrl/$endpoint');
+    return await _client.delete(uri, headers: _getHeaders());
+  }
+
+  /// 获取请求头
+  static Map<String, String> _getHeaders() {
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      // 这里可以添加认证信息，比如JWT token
+    };
+  }
+}
+
+/// Web环境下的模拟数据库实现
+class _MockDatabaseForWeb {
+  // 存储表数据，格式：{tableName: {rowId: rowData}}
+  final Map<String, Map<String, Map<String, dynamic>>> _tables = {};
+  // 自增ID计数器
+  final Map<String, int> _autoIncrementIds = {};
+  // 是否使用网络服务
+  final bool useNetworkService = false;
+
+  Future<void> execute(String sql) async {
+    // 简单的SQL解析，仅处理CREATE TABLE语句
+    if (sql.trim().toUpperCase().startsWith('CREATE TABLE')) {
+      final tableName =
+          RegExp(r'CREATE TABLE\s+(\w+)\s*\(').firstMatch(sql)?.group(1);
+      if (tableName != null) {
+        _tables[tableName] = {};
+        _autoIncrementIds[tableName] = 1;
+      }
+    }
+  }
+
+  // 注意：这里的实现需要同时支持带参数和不带参数的调用方式
+  // 当被调用为rawQuery(sql)或rawQuery(sql, args)时都能正常工作
+  // 我们将使用可选参数的方式实现
+  Future<List<Map<String, dynamic>>> rawQuery(String sql,
+      [List<Object?>? arguments]) async {
+    if (useNetworkService) {
+      try {
+        String? tableName;
+        if (sql.toUpperCase().contains('FROM')) {
+          final fromMatch = RegExp(r'FROM\s+(\w+)').firstMatch(sql.toUpperCase());
+          if (fromMatch != null) {
+            tableName = fromMatch.group(1);
+          }
+        }
+
+        if (tableName == 'journals') {
+          final prefs = await SharedPreferences.getInstance();
+          final userId = prefs.getString(StorageKeys.userId) ?? 'default_user';
+          final response = await _NetworkService.get('journals',
+              queryParams: {'user_id': userId});
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body) as List;
+            return data.cast<Map<String, dynamic>>();
+          }
+        }
+
+        if (tableName == 'categories') {
+          final prefs = await SharedPreferences.getInstance();
+          final userId = prefs.getString(StorageKeys.userId) ?? 'default_user';
+          String? typeFilter;
+          if (sql.toUpperCase().contains('WHERE') &&
+              arguments != null &&
+              arguments.isNotEmpty) {
+            final whereMatch =
+                RegExp(r'WHERE\s+type\s*=\s*\?').firstMatch(sql.toUpperCase());
+            if (whereMatch != null) {
+              typeFilter = arguments[0] as String;
+            }
+          }
+          final response = await _NetworkService.get('categories', queryParams: {
+            'user_id': userId,
+            if (typeFilter != null) 'type': typeFilter,
+          });
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body) as List;
+            return data.cast<Map<String, dynamic>>();
+          }
+        }
+      } catch (e) {
+        _log('网络服务查询失败，回退到本地实现: $e');
+      }
+    }
+
+    // 网络服务不可用或不支持的查询，使用本地模拟实现
+    if (sql.contains('sqlite_master') && sql.contains('table')) {
+      // 处理表存在检查的查询
+      final tableName = RegExp(r"name=\'([^\']+)\'").firstMatch(sql)?.group(1);
+      if (tableName != null && _tables.containsKey(tableName)) {
+        return [
+          {'name': tableName}
+        ];
+      }
+    }
+
+    // 处理参数化查询
+    if (arguments != null && sql.contains('?')) {
+      // 尝试提取表名
+      String? tableName;
+      if (sql.toUpperCase().contains('FROM')) {
+        final fromMatch = RegExp(r'FROM\s+(\w+)').firstMatch(sql.toUpperCase());
+        if (fromMatch != null) {
+          tableName = fromMatch.group(1);
+        }
+      }
+
+      // 如果能确定表名，并且表存在，执行简单的查询逻辑
+      if (tableName != null && _tables.containsKey(tableName)) {
+        final rows = _tables[tableName]!.values.toList();
+
+        // 简单的WHERE条件处理（仅处理单一条件的情况）
+        if (sql.toUpperCase().contains('WHERE') && arguments.isNotEmpty) {
+          final whereMatch =
+              RegExp(r'WHERE\s+(\w+)\s*=\s*\?').firstMatch(sql.toUpperCase());
+          if (whereMatch != null) {
+            final fieldName = whereMatch.group(1);
+            final filteredRows =
+                rows.where((row) => row[fieldName] == arguments[0]).toList();
+
+            // 处理COUNT查询
+            if (sql.toUpperCase().contains('COUNT')) {
+              return [
+                {'count': filteredRows.length}
+              ];
+            }
+
+            return filteredRows;
+          }
+        }
+
+        // 处理COUNT查询
+        if (sql.toUpperCase().contains('COUNT')) {
+          return [
+            {'count': rows.length}
+          ];
+        }
+
+        return rows;
+      }
+    }
+
+    return [];
+  }
+
+  Future<int> close() async {
+    return 0;
+  }
+
+  /// 实现batch方法以支持批量操作
+  _MockBatch batch() {
+    return _MockBatch(this);
+  }
+
+  /// 实现insert方法
+  Future<int> insert(String table, Map<String, dynamic> values,
+      {String? nullColumnHack}) async {
+    if (useNetworkService) {
+      try {
+        if (table == 'journals') {
+          final prefs = await SharedPreferences.getInstance();
+          final userId = prefs.getString(StorageKeys.userId) ?? 'default_user';
+          final body = Map<String, dynamic>.from(values);
+          body['user_id'] = userId;
+          final response = await _NetworkService.post('journals', body: body);
+          if (response.statusCode == 201) {
+            final data = jsonDecode(response.body);
+            return 1;
+          }
+        }
+
+        if (table == 'categories') {
+          final prefs = await SharedPreferences.getInstance();
+          final userId = prefs.getString(StorageKeys.userId) ?? 'default_user';
+          final body = Map<String, dynamic>.from(values);
+          body['user_id'] = userId;
+          final response = await _NetworkService.post('categories', body: body);
+          if (response.statusCode == 201) {
+            return 1;
+          }
+        }
+      } catch (e) {
+        _log('网络服务插入失败，回退到本地实现: $e');
+      }
+    }
+
+    // 网络服务不可用或不支持的插入，使用本地模拟实现
+    // 确保表存在
+    if (!_tables.containsKey(table)) {
+      _tables[table] = {};
+      _autoIncrementIds[table] = 1;
+    }
+
+    // 获取自增ID
+    final id = _autoIncrementIds[table]!;
+    _autoIncrementIds[table] = id + 1;
+
+    // 创建新行数据，复制传入的值并添加id
+    final newRow = Map<String, dynamic>.from(values);
+    newRow['id'] = id;
+
+    // 存储数据
+    _tables[table]![id.toString()] = newRow;
+
+    return id;
+  }
+
+  /// 实现query方法
+  Future<List<Map<String, dynamic>>> query(String table,
+      {String? columns,
+      String? where,
+      List<Object?>? whereArgs,
+      String? groupBy,
+      String? having,
+      String? orderBy,
+      int? limit,
+      int? offset}) async {
+    if (useNetworkService) {
+      try {
+        if (table == 'journals') {
+          final prefs = await SharedPreferences.getInstance();
+          final userId = prefs.getString(StorageKeys.userId) ?? 'default_user';
+          final response = await _NetworkService.get('journals',
+              queryParams: {'user_id': userId});
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body) as List;
+            return data.cast<Map<String, dynamic>>();
+          }
+        }
+      } catch (e) {
+        _log('网络服务查询失败，回退到本地实现: $e');
+      }
+    }
+
+    // 网络服务不可用或不支持的查询，使用本地模拟实现
+    // 确保表存在
+    if (!_tables.containsKey(table)) {
+      return [];
+    }
+
+    // 获取所有行
+    var rows = _tables[table]!.values.toList();
+
+    // 简单的where条件过滤
+    if (where != null && whereArgs != null && where.contains('?')) {
+      rows = rows.where((row) {
+        // 简单实现等于条件过滤，实际应用中需要更复杂的解析
+        if (where.contains('=') && whereArgs.length == 1) {
+          final fieldName = where.split('=')[0].trim();
+          return row[fieldName] == whereArgs[0];
+        }
+        return true;
+      }).toList();
+    }
+
+    // 排序
+    if (orderBy != null) {
+      rows.sort((a, b) {
+        final field = orderBy.split(' ')[0];
+        final isDesc = orderBy.toUpperCase().contains('DESC');
+
+        if (a[field] == null || b[field] == null) {
+          return 0;
+        }
+
+        final result = a[field].compareTo(b[field]);
+        return isDesc ? -result : result;
+      });
+    }
+
+    return rows;
+  }
+
+  /// 实现update方法
+  Future<int> update(String table, Map<String, dynamic> values,
+      {String? where, List<Object?>? whereArgs}) async {
+    if (useNetworkService) {
+      try {
+        if (table == 'journals') {
+          if (where != null && whereArgs != null && where.contains('?')) {
+            final whereMatch =
+                RegExp(r'WHERE\s+id\s*=\s*\?').firstMatch(where.toUpperCase());
+            if (whereMatch != null && whereArgs.isNotEmpty) {
+              final id = whereArgs[0];
+              final response =
+                  await _NetworkService.put('journals/$id', body: values);
+              if (response.statusCode == 200) {
+                return 1;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        _log('网络服务更新失败，回退到本地实现: $e');
+      }
+    }
+
+    // 网络服务不可用或不支持的更新，使用本地模拟实现
+    // 确保表存在
+    if (!_tables.containsKey(table)) {
+      return 0;
+    }
+
+    int count = 0;
+
+    // 更新匹配的行
+    _tables[table]!.forEach((key, row) {
+      bool shouldUpdate = false;
+
+      // 简单的where条件匹配
+      if (where != null && whereArgs != null && where.contains('?')) {
+        if (where.contains('=') && whereArgs.length == 1) {
+          final fieldName = where.split('=')[0].trim();
+          if (row[fieldName] == whereArgs[0]) {
+            shouldUpdate = true;
+          }
+        }
+      } else {
+        // 如果没有where条件，更新所有行
+        shouldUpdate = true;
+      }
+
+      if (shouldUpdate) {
+        // 更新行数据
+        final updatedRow = Map<String, dynamic>.from(row);
+        updatedRow.addAll(values);
+        _tables[table]![key] = updatedRow;
+        count++;
+      }
+    });
+
+    return count;
+  }
+
+  /// 实现delete方法
+  Future<int> delete(String table,
+      {String? where, List<Object?>? whereArgs}) async {
+    if (useNetworkService) {
+      try {
+        if (table == 'journals') {
+          if (where != null && whereArgs != null && where.contains('?')) {
+            final id = whereArgs[0];
+            final response = await _NetworkService.delete('journals/$id');
+            if (response.statusCode == 200) {
+              return 1;
+            }
+          }
+        }
+      } catch (e) {
+        _log('网络服务删除失败，回退到本地实现: $e');
+      }
+    }
+
+    // 网络服务不可用或不支持的删除，使用本地模拟实现
+    // 确保表存在
+    if (!_tables.containsKey(table)) {
+      return 0;
+    }
+
+    int count = 0;
+    final keysToDelete = <String>[];
+
+    // 找出要删除的行
+    _tables[table]!.forEach((key, row) {
+      bool shouldDelete = false;
+
+      // 简单的where条件匹配
+      if (where != null && whereArgs != null && where.contains('?')) {
+        if (where.contains('=') && whereArgs.length == 1) {
+          final fieldName = where.split('=')[0].trim();
+          if (row[fieldName] == whereArgs[0]) {
+            shouldDelete = true;
+          }
+        }
+      } else {
+        // 如果没有where条件，删除所有行
+        shouldDelete = true;
+      }
+
+      if (shouldDelete) {
+        keysToDelete.add(key);
+        count++;
+      }
+    });
+
+    // 执行删除
+    for (final key in keysToDelete) {
+      _tables[table]!.remove(key);
+    }
+
+    return count;
+  }
+}
+
+/// 模拟批量操作类
+class _MockBatch {
+  final _MockDatabaseForWeb _db;
+  final List<_BatchOperation> _operations = [];
+
+  _MockBatch(this._db);
+
+  /// 添加插入操作到批处理
+  void insert(String table, Map<String, dynamic> values,
+      {String? nullColumnHack}) {
+    _operations.add(_BatchOperation('insert', table, values));
+  }
+
+  /// 执行所有批处理操作
+  Future<List<Object?>> commit() async {
+    final results = <Object?>[];
+
+    for (final operation in _operations) {
+      if (operation.type == 'insert') {
+        // 确保表存在
+        if (!_db._tables.containsKey(operation.table)) {
+          _db._tables[operation.table] = {};
+        }
+
+        // 简单处理插入操作，使用当前时间戳作为ID
+        final id = DateTime.now().millisecondsSinceEpoch.toString();
+        _db._tables[operation.table]![id] = operation.values;
+        results.add(1); // 返回插入成功
+      }
+    }
+
+    return results;
+  }
+}
+
+/// 表示批处理中的单个操作
+class _BatchOperation {
+  final String type;
+  final String table;
+  final Map<String, dynamic> values;
+
+  _BatchOperation(this.type, this.table, this.values);
+}
+
+/// 创建模拟数据库实例
+dynamic _createMockDatabase() {
+  return _MockDatabaseForWeb();
+}
+
+// 获取文档目录的函数，适配Web环境
+Future<dynamic> _getDocumentsDirectory({bool includeUserDir = true}) async {
+  if (kIsWeb) {
+    return null; // Web环境返回null
+  }
+
+  try {
+    // 从SharedPreferences获取自定义存储路径
+    final prefs = await SharedPreferences.getInstance();
+    final customPath = prefs.getString(StorageKeys.storagePath);
+
+    Directory storageDir;
+
+    if (customPath != null && customPath.isNotEmpty) {
+      // 使用自定义存储路径
+      storageDir = Directory(customPath);
+    } else {
+      // 使用默认路径
+      Directory directory;
+      if (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS) {
+        // 移动端使用应用文档目录
+        directory = await getApplicationDocumentsDirectory();
+      } else if (defaultTargetPlatform == TargetPlatform.windows) {
+        // Windows使用文档目录
+        directory = Directory(path_package.join(
+            Platform.environment['USERPROFILE']!, 'Documents'));
+      } else if (defaultTargetPlatform == TargetPlatform.macOS) {
+        // macOS使用文档目录
+        directory = Directory(
+            path_package.join(Platform.environment['HOME']!, 'Documents'));
+      } else if (defaultTargetPlatform == TargetPlatform.linux) {
+        // Linux使用文档目录
+        directory = Directory(
+            path_package.join(Platform.environment['HOME']!, 'Documents'));
+      } else {
+        throw UnsupportedError('Unsupported platform');
+      }
+
+      // 创建软件数据目录，与ProductDatabaseService保持一致
+      storageDir =
+          Directory(path_package.join(directory.path, 'MomentKeep'));
+    }
+
+    // 确保存储目录存在
+    if (!await storageDir.exists()) {
+      await storageDir.create(recursive: true);
+    }
+
+    // 如果需要包含用户目录，则为当前用户创建独立目录
+    if (includeUserDir) {
+      final currentUserId =
+          await DatabaseService().getCurrentUserId() ?? 'default';
+      final userDir =
+          Directory(path_package.join(storageDir.path, currentUserId));
+      if (!await userDir.exists()) {
+        await userDir.create(recursive: true);
+      }
+      return userDir;
+    }
+
+    return storageDir;
+  } catch (e) {
+    _log('Error getting documents directory: $e');
+    // 出错时使用默认路径
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      return directory;
+    } catch (fallbackError) {
+      _log('Error getting fallback documents directory: $fallbackError');
+      return null;
+    }
+  }
+}
+
+/// 数据库服务类
+/// 负责数据库的初始化、连接和表结构管理
+class DatabaseService {
+  // 静态单例实例
+  static final DatabaseService _instance = DatabaseService._internal();
+
+  // 数据库实例
+  static DatabaseType? _database;
+
+  // Web平台的模拟数据库
+  _MockDatabaseForWeb? _mockDatabase;
+
+  // 初始化状态标志
+  bool _isInitialized = false;
+
+  // 初始化完成的Completer
+  Completer<void>? _initializationCompleter;
+
+  // 私有构造函数
+  DatabaseService._internal();
+
+  // 工厂构造函数返回单例
+  factory DatabaseService() => _instance;
+
+  /// 数据库名称
+  static const String _databaseName = 'moment_keep.db';
+
+  /// 数据库版本
+  static const int _databaseVersion = 25;
+
+  /// 预初始化数据库服务（轻量级）
+  /// 仅进行必要的准备工作，不执行耗时操作
+  void preInitialize() {
+    // 这里可以做一些轻量级的准备工作
+    _initializationCompleter = Completer<void>();
+  }
+
+  /// 获取数据库实例（单例模式，确保所有部分共享同一个连接）
+  Future<DatabaseType> get database async {
+    // 如果数据库已打开且连接正常，直接返回
+    if (_database != null) {
+      return _database!;
+    }
+
+    // 如果在Web平台，使用模拟数据库
+    if (kIsWeb) {
+      _mockDatabase = _MockDatabaseForWeb();
+      _isInitialized = true;
+      if (_initializationCompleter != null &&
+          !_initializationCompleter!.isCompleted) {
+        _initializationCompleter!.complete();
+      }
+      return _mockDatabase!;
+    }
+
+    // 初始化数据库实例
+    _database = await _initDatabase();
+
+    try {
+      final db = _database!;
+      final versionResult = await db.rawQuery('PRAGMA user_version');
+      final currentVersion = versionResult.isNotEmpty ? (versionResult.first['user_version'] as int? ?? 0) : 0;
+
+      if (currentVersion == 0) {
+        final tablesResult = await db.rawQuery(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+
+        if (tablesResult.isEmpty) {
+          _log('Database is empty (version=0, no tables). Closing and re-initializing...');
+          await db.close();
+          _database = null;
+
+          final userDir = await _getDocumentsDirectory(includeUserDir: true);
+          if (userDir != null) {
+            final dbPath = path_package.join(userDir.path, _databaseName);
+            final dbFile = File(dbPath);
+            if (await dbFile.exists()) {
+              await dbFile.delete();
+              _log('Deleted empty database file: $dbPath');
+            }
+          }
+
+          _database = await _initDatabase();
+        }
+      }
+    } catch (e) {
+      _log('Database integrity check failed: $e');
+    }
+
+    await _ensureTablesExist(_database!);
+
+    // 迁移旧的 coupons/red_packets 表数据到 ProductDatabaseService
+    await _migrateCouponsAndRedPacketsToProductDb(_database!);
+
+    // 迁移个人数据表从 products.db 到 moment_keep.db
+    await _migratePersonalTablesFromProductDb(_database!);
+
+    // 迁移 shopping_cards 和 reviews 从 moment_keep.db 到 products.db
+    await _migrateShoppingCardsAndReviewsToProductDb(_database!);
+
+    // 标记为已初始化
+    if (!_isInitialized &&
+        _initializationCompleter != null &&
+        !_initializationCompleter!.isCompleted) {
+      _isInitialized = true;
+      _initializationCompleter!.complete();
+    }
+
+    return _database!;
+  }
+
+  /// 检查并创建缺失的表
+  Future<void> _ensureTablesExist(dynamic db) async {
+    _log('Checking and creating missing tables...');
+
+    final coreTables = ['habits', 'tags', 'habit_tags', 'habit_records', 'plans', 'plan_habits', 'pomodoro_records', 'achievements', 'journals', 'todos'];
+    final missingTables = <String>[];
+    for (final tableName in coreTables) {
+      final tableResult = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='$tableName'");
+      if (tableResult.isEmpty) {
+        missingTables.add(tableName);
+        _log('Core table $tableName is missing');
+      }
+    }
+
+    if (missingTables.contains('habits')) {
+      _log('Critical: habits table missing. Re-executing _onCreate...');
+      try {
+        await _onCreate(db, _databaseVersion);
+        await db.execute('PRAGMA user_version = $_databaseVersion');
+      } catch (e) {
+        _log('Error re-executing _onCreate: $e');
+      }
+      return;
+    }
+
+    if (missingTables.contains('pomodoro_records')) {
+      _log('pomodoro_records table missing. Re-executing _onCreate...');
+      try {
+        await _onCreate(db, _databaseVersion);
+      } catch (e) {
+        _log('Error re-executing _onCreate for pomodoro_records: $e');
+      }
+    }
+
+    // reviews 和 shopping_cards 表已迁移至 ProductDatabaseService (moment_keep_products.db)
+    // 不再在 moment_keep.db 中创建这两个表
+    
+    // coupons 和 red_packets 表已迁移至 ProductDatabaseService (moment_keep_products.db)
+    // 不再在 moment_keep.db 中创建这两个简单表
+    
+    // 检查user_coupons表是否存在
+    final userCouponsTableResult = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='user_coupons'");
+    if (userCouponsTableResult.isEmpty) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS user_coupons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          coupon_id INTEGER NOT NULL,
+          order_id TEXT,
+          used_at INTEGER,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          status TEXT NOT NULL DEFAULT 'unused'
+        );
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_user_coupons_user_id ON user_coupons (user_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_user_coupons_coupon_id ON user_coupons (coupon_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_user_coupons_status ON user_coupons (status)');
+      _log('Created missing user_coupons table');
+    }
+
+    // 检查red_packet_claims表是否存在
+    final redPacketClaimsTableResult = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='red_packet_claims'");
+    if (redPacketClaimsTableResult.isEmpty) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS red_packet_claims (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          red_packet_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          amount INTEGER NOT NULL,
+          claimed_at INTEGER NOT NULL
+        );
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_red_packet_claims_red_packet_id ON red_packet_claims (red_packet_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_red_packet_claims_user_id ON red_packet_claims (user_id)');
+      _log('Created missing red_packet_claims table');
+    }
+
+    // 检查addresses表是否存在
+    final addressesTableResult = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='addresses'");
+    if (addressesTableResult.isEmpty) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS addresses (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          phone TEXT NOT NULL,
+          province TEXT,
+          city TEXT,
+          district TEXT,
+          detail TEXT NOT NULL,
+          is_default INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_addresses_user_id ON addresses (user_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_addresses_is_default ON addresses (is_default)');
+      _log('Created missing addresses table');
+    }
+
+    // 检查buyer_extensions表是否存在
+    final buyerExtensionsTableResult = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='buyer_extensions'");
+    if (buyerExtensionsTableResult.isEmpty) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS buyer_extensions (
+          user_id TEXT PRIMARY KEY,
+          nickname VARCHAR(20) NOT NULL,
+          avatar VARCHAR(255),
+          gender TINYINT DEFAULT 0,
+          birthday DATE,
+          phone VARCHAR(20),
+          email VARCHAR(100),
+          password_hash VARCHAR(128),
+          pay_password_hash VARCHAR(128),
+          secret_question VARCHAR(255),
+          default_address_id VARCHAR(12),
+          member_level TINYINT DEFAULT 0,
+          points REAL DEFAULT 0,
+          id_card_encrypt VARCHAR(128),
+          real_name VARCHAR(50),
+          privacy_setting JSON
+        );
+      ''');
+      await db.execute(
+          'CREATE UNIQUE INDEX IF NOT EXISTS idx_buyer_phone ON buyer_extensions(phone)');
+      await db.execute(
+          'CREATE UNIQUE INDEX IF NOT EXISTS idx_buyer_email ON buyer_extensions(email)');
+      _log('Created missing buyer_extensions table');
+    }
+
+    // 检查member_levels表是否存在
+    final memberLevelsTableResult = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='member_levels'");
+    if (memberLevelsTableResult.isEmpty) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS member_levels (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          level INTEGER NOT NULL DEFAULT 1,
+          name TEXT NOT NULL DEFAULT '普通会员',
+          points INTEGER NOT NULL DEFAULT 0,
+          benefits TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_member_levels_user_id ON member_levels (user_id)');
+      _log('Created missing member_levels table');
+    }
+
+    // 检查pomodoro_records表是否存在
+    final pomodoroRecordsTableResult = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='pomodoro_records'");
+    if (pomodoroRecordsTableResult.isEmpty) {
+      // 创建pomodoro_records表
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS pomodoro_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          pomodoro_id TEXT NOT NULL,
+          todo_id INTEGER,
+          habit_id INTEGER,
+          user_id TEXT,
+          start_time INTEGER NOT NULL,
+          end_time INTEGER,
+          duration_minutes INTEGER NOT NULL DEFAULT 25,
+          is_completed INTEGER NOT NULL DEFAULT 0,
+          notes TEXT,
+          state TEXT,
+          FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE SET NULL,
+          FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE SET NULL
+        );
+      ''');
+      _log('Created missing pomodoro_records table');
+      
+      final pomodoroIndexStatements = [
+        'CREATE INDEX IF NOT EXISTS idx_pomodoro_records_completed ON pomodoro_records (is_completed)',
+        'CREATE INDEX IF NOT EXISTS idx_pomodoro_records_pomodoro_id ON pomodoro_records (pomodoro_id)',
+        'CREATE INDEX IF NOT EXISTS idx_pomodoro_records_user_id ON pomodoro_records (user_id)',
+      ];
+      for (final stmt in pomodoroIndexStatements) {
+        try {
+          await db.execute(stmt);
+        } catch (e) {
+          _log('Warning: Failed to create pomodoro index (non-critical): $e');
+        }
+      }
+      _log('Created indexes for pomodoro_records table');
+    }
+  }
+
+  /// 等待数据库完全初始化完成
+  Future<void> waitForInitialization() async {
+    if (_initializationCompleter != null &&
+        !_initializationCompleter!.isCompleted) {
+      await _initializationCompleter!.future;
+    }
+  }
+
+  /// 迁移 moment_keep.db 中的旧 coupons/red_packets 表数据到 ProductDatabaseService
+  Future<void> _migrateCouponsAndRedPacketsToProductDb(dynamic db) async {
+    try {
+      final couponsTableResult = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='coupons'");
+      final redPacketsTableResult = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='red_packets'");
+
+      bool hasCouponsData = false;
+      bool hasRedPacketsData = false;
+
+      if (couponsTableResult.isNotEmpty) {
+        final countResult = await db.rawQuery('SELECT COUNT(*) as count FROM coupons');
+        hasCouponsData = (countResult.isNotEmpty && (int.tryParse(countResult[0]['count'].toString()) ?? 0) > 0);
+      }
+
+      if (redPacketsTableResult.isNotEmpty) {
+        final countResult = await db.rawQuery('SELECT COUNT(*) as count FROM red_packets');
+        hasRedPacketsData = (countResult.isNotEmpty && (int.tryParse(countResult[0]['count'].toString()) ?? 0) > 0);
+      }
+
+      if (!hasCouponsData && !hasRedPacketsData) {
+        if (couponsTableResult.isNotEmpty) {
+          await db.execute('DROP TABLE IF EXISTS coupons');
+          _log('Dropped empty coupons table from moment_keep.db');
+        }
+        if (redPacketsTableResult.isNotEmpty) {
+          await db.execute('DROP TABLE IF EXISTS red_packets');
+          _log('Dropped empty red_packets table from moment_keep.db');
+        }
+        return;
+      }
+
+      final productDb = ProductDatabaseService();
+      final productDatabase = await productDb.database;
+
+      if (hasCouponsData) {
+        final coupons = await db.query('coupons');
+        for (var coupon in coupons) {
+          try {
+            final couponId = await productDatabase.insert('coupons', {
+              'name': coupon['name'] ?? '',
+              'code': 'MIGRATED_${coupon['id'] ?? DateTime.now().millisecondsSinceEpoch}',
+              'type': coupon['type'] ?? '满减券',
+              'value': coupon['amount'] ?? 0,
+              'min_amount': coupon['condition'] ?? 0,
+              'total_count': 1,
+              'used_count': coupon['status'] == '可用' ? 0 : 1,
+              'is_active': 1,
+              'created_at': coupon['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': coupon['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+
+            await productDatabase.insert('user_coupons', {
+              'user_id': coupon['user_id'] ?? '',
+              'coupon_id': couponId,
+              'status': coupon['status'] == '可用' ? 'unused' : 'used',
+              'used_at': coupon['used_at'],
+              'order_id': coupon['used_order_id'],
+              'created_at': coupon['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'expires_at': coupon['validity'] != null && coupon['validity'] != '永久'
+                  ? DateTime.tryParse(coupon['validity'].toString())?.millisecondsSinceEpoch
+                  : null,
+            });
+          } catch (e) {
+            _log('Error migrating coupon ${coupon['id']}: $e');
+          }
+        }
+        _log('Migrated ${coupons.length} coupons to ProductDatabaseService');
+      }
+
+      if (hasRedPacketsData) {
+        final redPackets = await db.query('red_packets');
+        for (var rp in redPackets) {
+          try {
+            final redPacketId = await productDatabase.insert('red_packets', {
+              'name': rp['name'] ?? '',
+              'type': rp['type'] ?? '现金红包',
+              'total_amount': rp['amount'] ?? 0,
+              'total_count': 1,
+              'received_count': 1,
+              'is_active': 1,
+              'created_at': rp['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': rp['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+
+            await productDatabase.insert('red_packet_claims', {
+              'red_packet_id': redPacketId,
+              'user_id': rp['user_id'] ?? '',
+              'amount': rp['amount'] ?? 0,
+              'claimed_at': rp['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          } catch (e) {
+            _log('Error migrating red packet ${rp['id']}: $e');
+          }
+        }
+        _log('Migrated ${redPackets.length} red packets to ProductDatabaseService');
+      }
+
+      await db.execute('DROP TABLE IF EXISTS coupons');
+      await db.execute('DROP TABLE IF EXISTS red_packets');
+      _log('Dropped old coupons and red_packets tables from moment_keep.db');
+    } catch (e) {
+      _log('Error during coupons/red_packets migration: $e');
+    }
+  }
+
+  /// 迁移个人数据表从 products.db 到 moment_keep.db
+  /// 将 user_coupons, red_packet_claims, addresses, member_levels 从 products.db 迁移到 moment_keep.db
+  Future<void> _migratePersonalTablesFromProductDb(dynamic db) async {
+    try {
+      final productDb = ProductDatabaseService();
+      final productDatabase = await productDb.database;
+
+      final personalTables = ['user_coupons', 'red_packet_claims', 'addresses', 'member_levels'];
+
+      for (final tableName in personalTables) {
+        try {
+          final tableExistsInProduct = await productDatabase.rawQuery(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name='$tableName'");
+          if (tableExistsInProduct.isEmpty) {
+            _log('Table $tableName does not exist in products.db, skipping migration');
+            continue;
+          }
+
+          final countResult = await productDatabase.rawQuery('SELECT COUNT(*) as count FROM $tableName');
+          final count = countResult.isNotEmpty ? (int.tryParse(countResult[0]['count'].toString()) ?? 0) : 0;
+          if (count == 0) {
+            _log('Table $tableName in products.db is empty, skipping migration');
+            continue;
+          }
+
+          final records = await productDatabase.query(tableName);
+          int migratedCount = 0;
+
+          for (final record in records) {
+            try {
+              final existingRecord = await db.query(
+                tableName,
+                where: 'id = ?',
+                whereArgs: [record['id']],
+              );
+              if (existingRecord.isEmpty) {
+                await db.insert(tableName, record,
+                    conflictAlgorithm: sqflite_package.ConflictAlgorithm.ignore);
+                migratedCount++;
+              }
+            } catch (e) {
+              _log('Error migrating record from $tableName: $e');
+            }
+          }
+
+          _log('Migrated $migratedCount/$count records from products.db $tableName to moment_keep.db');
+        } catch (e) {
+          _log('Error migrating table $tableName from products.db: $e');
+        }
+      }
+
+      _log('Personal tables kept in products.db for management use');
+    } catch (e) {
+      _log('Error during personal tables migration from products.db: $e');
+    }
+  }
+
+  /// 迁移 shopping_cards 和 reviews 从 moment_keep.db 到 products.db
+  Future<void> _migrateShoppingCardsAndReviewsToProductDb(dynamic db) async {
+    try {
+      final productDb = ProductDatabaseService();
+      final productDatabase = await productDb.database;
+
+      // 迁移 shopping_cards
+      final shoppingCardsTableResult = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='shopping_cards'");
+      if (shoppingCardsTableResult.isNotEmpty) {
+        final countResult = await db.rawQuery('SELECT COUNT(*) as count FROM shopping_cards');
+        final count = countResult.isNotEmpty ? (int.tryParse(countResult[0]['count'].toString()) ?? 0) : 0;
+
+        if (count > 0) {
+          final cards = await db.query('shopping_cards');
+          for (var card in cards) {
+            try {
+              final existingCard = await productDatabase.query(
+                'shopping_cards',
+                where: 'card_no = ?',
+                whereArgs: ['MIGRATED_${card['id']}'],
+              );
+              if (existingCard.isEmpty) {
+                await productDatabase.insert('shopping_cards', {
+                  'card_no': 'MIGRATED_${card['id']}',
+                  'name': card['name'] ?? '',
+                  'total_amount': card['amount'] ?? 0,
+                  'balance': card['amount'] ?? 0,
+                  'status': card['status'] == '可用' ? 'active' : (card['status'] ?? 'inactive'),
+                  'user_id': card['user_id'],
+                  'activated_at': card['created_at'],
+                  'created_at': card['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+                  'updated_at': card['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+                });
+              }
+            } catch (e) {
+              _log('Error migrating shopping card ${card['id']}: $e');
+            }
+          }
+          _log('Migrated $count shopping_cards from moment_keep.db to products.db');
+        }
+
+        await db.execute('DROP TABLE IF EXISTS shopping_cards');
+        _log('Dropped shopping_cards table from moment_keep.db');
+      }
+
+      // 迁移 reviews
+      final reviewsTableResult = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='reviews'");
+      if (reviewsTableResult.isNotEmpty) {
+        final countResult = await db.rawQuery('SELECT COUNT(*) as count FROM reviews');
+        final count = countResult.isNotEmpty ? (int.tryParse(countResult[0]['count'].toString()) ?? 0) : 0;
+
+        if (count > 0) {
+          final reviews = await db.query('reviews');
+          for (var review in reviews) {
+            try {
+              final existingReview = await productDatabase.query(
+                'reviews',
+                where: 'id = ?',
+                whereArgs: [review['id']],
+              );
+              if (existingReview.isEmpty) {
+                await productDatabase.insert('reviews', {
+                  'id': review['id'],
+                  'order_id': review['order_id'],
+                  'product_id': review['product_id'],
+                  'product_name': review['product_name'],
+                  'product_image': review['product_image'],
+                  'variant': review['variant'],
+                  'rating': review['rating'],
+                  'content': review['content'],
+                  'images': review['images'],
+                  'created_at': review['created_at'],
+                  'appended_at': review['appended_at'],
+                  'appended_content': review['appended_content'],
+                  'appended_images': review['appended_images'],
+                  'seller_reply': review['seller_reply'],
+                  'seller_reply_at': review['seller_reply_at'],
+                  'status': review['status'],
+                  'is_anonymous': 1,
+                }, conflictAlgorithm: sqflite_package.ConflictAlgorithm.ignore);
+              }
+            } catch (e) {
+              _log('Error migrating review ${review['id']}: $e');
+            }
+          }
+          _log('Migrated $count reviews from moment_keep.db to products.db');
+        }
+
+        await db.execute('DROP TABLE IF EXISTS reviews');
+        _log('Dropped reviews table from moment_keep.db');
+      }
+    } catch (e) {
+      _log('Error during shopping_cards/reviews migration to products.db: $e');
+    }
+  }
+
+  /// 初始化数据库（重写为轻量级版本）
+  /// 确保数据库已创建并连接
+  Future<void> initialize() async {
+    // 只进行预初始化，不执行完整的数据库加载
+    preInitialize();
+    // 初始化加密助手
+    await EncryptionHelper.initialize();
+    // 不等待完整数据库加载，允许异步进行
+  }
+
+  /// 完全初始化数据库（用于需要完整数据库时）
+  Future<void> fullyInitialize() async {
+    // 确保数据库已经初始化并获取实例
+    await database;
+  }
+
+  /// 初始化数据库
+  Future<DatabaseType> _initDatabase() async {
+    // 处理不同环境下的数据库初始化
+    try {
+      if (kIsWeb) {
+        // Web环境使用模拟数据库
+        _log('Web环境: 使用模拟内存数据库');
+        final mockDb = _createMockDatabase();
+        // 手动调用onCreate初始化表结构
+        await _onCreate(mockDb, _databaseVersion);
+        return mockDb;
+      }
+
+      // 获取存储目录（包含用户目录）
+      final userDir = await _getDocumentsDirectory(includeUserDir: true);
+      if (userDir == null) {
+        throw Exception('Unable to access storage directory');
+      }
+
+      // 使用用户目录存储该用户的数据
+      final path = path_package.join(userDir.path, _databaseName);
+      _log('使用用户目录: $path');
+
+      // 桌面平台处理 (Windows, Linux, macOS)
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        _log('桌面环境: 使用FFi数据库 at $path');
+        try {
+          final dbFile = File(path);
+          if (await dbFile.exists() && await dbFile.length() == 0) {
+            _log('Database file exists but is empty (0 bytes). Deleting and recreating...');
+            await databaseFactoryFfi.deleteDatabase(path);
+          }
+        } catch (e) {
+          _log('Error checking/deleting empty database file: $e');
+        }
+        try {
+          sqfliteFfiInit();
+          return await databaseFactoryFfi.openDatabase(
+            path,
+            options: sqflite_package.OpenDatabaseOptions(
+              version: _databaseVersion,
+              onCreate: _onCreate,
+              onUpgrade: _onUpgrade,
+              singleInstance: true,
+            ),
+          );
+        } catch (e) {
+          _log('FFi初始化错误: $e，尝试删除旧数据库文件后重试...');
+          try {
+            await databaseFactoryFfi.deleteDatabase(path);
+            _log('已删除旧数据库文件，重新创建...');
+            return await databaseFactoryFfi.openDatabase(
+              path,
+              options: sqflite_package.OpenDatabaseOptions(
+                version: _databaseVersion,
+                onCreate: _onCreate,
+                onUpgrade: _onUpgrade,
+                singleInstance: true,
+              ),
+            );
+          } catch (retryError) {
+            _log('FFi重试初始化也失败: $retryError');
+          }
+        }
+      } else {
+        _log('移动环境: 使用文件数据库 at $path');
+      }
+
+      // 使用默认数据库工厂打开数据库
+      return await sqflite_package.openDatabase(
+        path,
+        version: _databaseVersion,
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
+      );
+    } catch (e) {
+      _log('数据库初始化错误: $e');
+      // 任何环境下如果初始化失败，返回一个空的MockDatabase实例
+      _log('尝试使用备用模拟数据库实现');
+      return _createMockDatabase();
+    }
+  }
+
+  /// 创建数据库表结构 - 统一处理不同平台的数据库类型
+  Future<void> _onCreate(dynamic db, int version) async {
+    _log('Creating database tables, version: $version');
+
+    // 用户管理功能已移至moment_keep_users.db数据库
+    // 此处不再创建users表和id_management表
+
+    // 创建习惯表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS habits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        icon TEXT NOT NULL,
+        color INTEGER NOT NULL DEFAULT 0,
+        frequency TEXT NOT NULL DEFAULT 'daily',
+        type TEXT NOT NULL DEFAULT 'positive',
+        is_reminder_enabled INTEGER NOT NULL DEFAULT 0,
+        reminder_time TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        user_id TEXT,
+        data TEXT NOT NULL DEFAULT '{}',
+        min_check_in_days INTEGER NOT NULL DEFAULT 0,
+        check_in_points INTEGER NOT NULL DEFAULT 0,
+        penalty_points INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    _log('Created habits table');
+
+    // 创建标签表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        color TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        user_id TEXT
+      );
+    ''');
+    _log('Created tags table');
+
+    // 创建习惯-标签关联表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS habit_tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        habit_id INTEGER NOT NULL,
+        tag_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE,
+        UNIQUE(habit_id, tag_id)
+      );
+    ''');
+    _log('Created habit_tags table');
+
+    // 创建打卡记录表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS habit_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        habit_id INTEGER NOT NULL,
+        check_in_date TEXT NOT NULL,
+        check_in_time TEXT NOT NULL,
+        note TEXT,
+        score INTEGER DEFAULT 100,
+        status TEXT NOT NULL DEFAULT 'completed',
+        FOREIGN KEY (habit_id) REFERENCES habits (id) ON DELETE CASCADE
+      )
+    ''');
+    _log('Created habit_records table');
+
+    // 创建计划表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        description TEXT,
+        max_score INTEGER DEFAULT 100,
+        start_date TEXT NOT NULL,
+        end_date TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        user_id TEXT
+      )
+    ''');
+    _log('Created plans table');
+
+    // 创建计划与习惯关联表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS plan_habits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plan_id INTEGER NOT NULL,
+        habit_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (plan_id) REFERENCES plans (id) ON DELETE CASCADE,
+        FOREIGN KEY (habit_id) REFERENCES habits (id) ON DELETE CASCADE,
+        UNIQUE (plan_id, habit_id)
+      )
+    ''');
+    _log('Created plan_habits table');
+
+    // 仅在版本大于等于3时创建新表（新安装的应用）
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS user_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(user_id, key)
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings (user_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_user_settings_user_key ON user_settings (user_id, key)');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS recycle_bin (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        item_type TEXT NOT NULL,
+        item_data TEXT NOT NULL,
+        deleted_at TEXT NOT NULL,
+        expires_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_recycle_bin_user_id ON recycle_bin (user_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_recycle_bin_expires ON recycle_bin (expires_at)');
+
+    // 创建番茄钟记录表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pomodoro_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pomodoro_id TEXT NOT NULL,
+        todo_id INTEGER,
+        habit_id INTEGER,
+        user_id TEXT,
+        start_time INTEGER NOT NULL,
+        end_time INTEGER,
+        duration_minutes INTEGER NOT NULL DEFAULT 25,
+        is_completed INTEGER NOT NULL DEFAULT 0,
+        notes TEXT,
+        state TEXT,
+        FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE SET NULL,
+        FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE SET NULL
+      );
+    ''');
+    _log('Created pomodoro_records table');
+
+    // 创建成就表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS achievements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        target_value INTEGER DEFAULT 0,
+        is_unlocked INTEGER DEFAULT 0,
+        unlocked_at TEXT,
+        user_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    _log('Created achievements table');
+
+    // 创建日记表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS journals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_id INTEGER,
+        title TEXT,
+        content TEXT NOT NULL,
+        tags TEXT,
+        date TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'normal',
+        attachments TEXT,
+        mistake_meta TEXT,
+        user_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    _log('Created journals table');
+
+    // 创建待办事项表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS todos (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        is_completed INTEGER NOT NULL DEFAULT 0,
+        date TEXT NOT NULL,
+        priority TEXT NOT NULL DEFAULT 'medium',
+        user_id TEXT,
+        kanban_column_id TEXT,
+        category_id TEXT,
+        data TEXT,
+        created_at TEXT
+      )
+    ''');
+    _log('Created todos table');
+
+    // 创建索引以提高查询性能
+    final indexStatements = [
+      'CREATE INDEX IF NOT EXISTS idx_habit_records_habit_id ON habit_records (habit_id)',
+      'CREATE INDEX IF NOT EXISTS idx_habit_records_date ON habit_records (check_in_date)',
+      'CREATE INDEX IF NOT EXISTS idx_plan_habits_plan_id ON plan_habits (plan_id)',
+      'CREATE INDEX IF NOT EXISTS idx_plan_habits_habit_id ON plan_habits (habit_id)',
+      'CREATE INDEX IF NOT EXISTS idx_tags_name ON tags (name)',
+      'CREATE INDEX IF NOT EXISTS idx_habit_tags_habit_id ON habit_tags (habit_id)',
+      'CREATE INDEX IF NOT EXISTS idx_habit_tags_tag_id ON habit_tags (tag_id)',
+      'CREATE INDEX IF NOT EXISTS idx_pomodoro_records_completed ON pomodoro_records (is_completed)',
+      'CREATE INDEX IF NOT EXISTS idx_pomodoro_records_user_id ON pomodoro_records (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_achievements_unlocked ON achievements (is_unlocked)',
+      'CREATE INDEX IF NOT EXISTS idx_achievements_type ON achievements (type)',
+      'CREATE INDEX IF NOT EXISTS idx_achievements_user_id ON achievements (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_journals_user_id ON journals (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_todos_user_id ON todos (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_plans_user_id ON plans (user_id)',
+    ];
+    for (final stmt in indexStatements) {
+      try {
+        await db.execute(stmt);
+      } catch (e) {
+        _log('Warning: Failed to create index (non-critical): $e');
+      }
+    }
+
+    // 创建账单表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS bills (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        balance INTEGER NOT NULL DEFAULT 0,
+        income INTEGER NOT NULL DEFAULT 0,
+        expense INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created bills table');
+
+    // 创建账单明细表
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS bill_items (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        bill_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        transaction_type TEXT NOT NULL,
+        description TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        related_id TEXT,
+        rule_snapshot TEXT,
+        FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE
+      );
+    ''');
+    
+    // coupons 和 red_packets 表已迁移至 ProductDatabaseService (moment_keep_products.db)
+    // 不再在 moment_keep.db 中创建这两个简单表
+    
+    // shopping_cards 和 reviews 表已迁移至 ProductDatabaseService (moment_keep_products.db)
+    // 不再在 moment_keep.db 中创建这两个表
+
+    // 创建用户优惠券表（个人数据，从 products.db 迁移至 moment_keep.db）
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS user_coupons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        coupon_id INTEGER NOT NULL,
+        order_id TEXT,
+        used_at INTEGER,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        status TEXT NOT NULL DEFAULT 'unused'
+      );
+    ''');
+
+    // 创建红包领取记录表（个人数据，从 products.db 迁移至 moment_keep.db）
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS red_packet_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        red_packet_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        claimed_at INTEGER NOT NULL
+      );
+    ''');
+
+    // 创建地址表（个人数据，从 products.db 迁移至 moment_keep.db）
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS addresses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        province TEXT,
+        city TEXT,
+        district TEXT,
+        detail TEXT NOT NULL,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+
+    // 创建会员等级表（个人数据，从 products.db 迁移至 moment_keep.db）
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS member_levels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        level INTEGER NOT NULL DEFAULT 1,
+        name TEXT NOT NULL DEFAULT '普通会员',
+        points INTEGER NOT NULL DEFAULT 0,
+        benefits TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+    _log('Created bill_items, user_coupons, red_packet_claims, addresses and member_levels tables');
+
+    // 添加账单相关索引（独立 try-catch 保护）
+    final billIndexStatements = [
+      'CREATE INDEX IF NOT EXISTS idx_bills_user_id ON bills (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_bill_items_user_id ON bill_items (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_bill_items_bill_id ON bill_items (bill_id)',
+      'CREATE INDEX IF NOT EXISTS idx_bill_items_type ON bill_items (type)',
+      'CREATE INDEX IF NOT EXISTS idx_bill_items_transaction_type ON bill_items (transaction_type)',
+      'CREATE INDEX IF NOT EXISTS idx_bill_items_created_at ON bill_items (created_at)',
+      'CREATE INDEX IF NOT EXISTS idx_user_coupons_user_id ON user_coupons (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_user_coupons_coupon_id ON user_coupons (coupon_id)',
+      'CREATE INDEX IF NOT EXISTS idx_user_coupons_status ON user_coupons (status)',
+      'CREATE INDEX IF NOT EXISTS idx_red_packet_claims_red_packet_id ON red_packet_claims (red_packet_id)',
+      'CREATE INDEX IF NOT EXISTS idx_red_packet_claims_user_id ON red_packet_claims (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_addresses_user_id ON addresses (user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_addresses_is_default ON addresses (is_default)',
+      'CREATE INDEX IF NOT EXISTS idx_member_levels_user_id ON member_levels (user_id)',
+    ];
+    for (final stmt in billIndexStatements) {
+      try {
+        await db.execute(stmt);
+      } catch (e) {
+        _log('Warning: Failed to create index (non-critical): $e');
+      }
+    }
+    _log('Added indexes for bill and personal data tables');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        icon TEXT NOT NULL DEFAULT '',
+        color INTEGER NOT NULL DEFAULT 0,
+        type TEXT NOT NULL DEFAULT 'default',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        data TEXT NOT NULL DEFAULT '{}'
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_categories_user_id ON categories (user_id)');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS kanban_columns (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#6750A4',
+        position INTEGER NOT NULL DEFAULT 0,
+        user_id TEXT
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_kanban_columns_user_id ON kanban_columns (user_id)');
+
+    _log('数据库表结构创建完成，版本: $version');
+  }
+
+  /// 数据库升级处理 - 统一处理不同平台的数据库类型
+  Future<void> _onUpgrade(dynamic db, int oldVersion, int newVersion) async {
+    _log('Upgrading database from version $oldVersion to $newVersion');
+    await _onCreate(db, newVersion);
+  }
+
+  /// 关闭数据库连接
+  Future<void> closeDatabase() async {
+    if (_database != null) {
+      await _database!.close();
+      _database = null;
+    }
+    _isInitialized = false;
+  }
+
+  /// 删除数据库（用于开发和测试）
+  Future<void> deleteDatabase() async {
+    try {
+      await closeDatabase();
+
+      if (!kIsWeb) {
+        // 非Web环境使用sqflite删除数据库
+        final directory = await _getDocumentsDirectory();
+        if (directory != null) {
+          final path = path_package.join(directory.path, _databaseName);
+          await sqflite_package.deleteDatabase(path);
+        }
+      } else {
+        // Web环境重置数据库实例
+        _database = null;
+        // 重新初始化一个空的数据库
+        _database = await _initDatabase();
+        _log('Web环境: 数据库已重置');
+      }
+    } catch (e) {
+      _log('删除数据库失败: $e');
+    }
+  }
+
+  /// 清空所有数据（保留表结构）
+  /// 用于重置应用数据，解决数据冲突问题
+  Future<void> clearAllData() async {
+    try {
+      final db = await database;
+
+      _log('开始清空所有数据...');
+
+      // 定义需要清空的表（按依赖顺序，先删除子表）
+      final tablesToClear = [
+        'habit_records',
+        'habit_tags',
+        'plan_habits',
+        'pomodoro_records',
+        'bill_items',
+        'bills',
+        'user_coupons',
+        'red_packet_claims',
+        'addresses',
+        'member_levels',
+        'todos',
+        'journals',
+        'habits',
+        'tags',
+        'plans',
+        'achievements',
+        'users',
+      ];
+
+      // 逐个清空表
+      for (final table in tablesToClear) {
+        try {
+          await db.delete(table);
+          _log('已清空表: $table');
+        } catch (e) {
+          _log('清空表 $table 失败: $e');
+          // 继续清空其他表
+        }
+      }
+
+      // Web环境需要重置自增ID
+      if (kIsWeb && _mockDatabase != null) {
+        for (final table in tablesToClear) {
+          _mockDatabase!._autoIncrementIds[table] = 1;
+        }
+      }
+
+      _log('所有数据已清空');
+    } catch (e) {
+      _log('清空数据失败: $e');
+      rethrow;
+    }
+  }
+
+  /// 清空特定表的数据
+  Future<void> clearTable(String tableName) async {
+    try {
+      final db = await database;
+      await db.delete(tableName);
+
+      // Web环境重置自增ID
+      if (kIsWeb && _mockDatabase != null) {
+        _mockDatabase!._autoIncrementIds[tableName] = 1;
+      }
+
+      _log('已清空表: $tableName');
+    } catch (e) {
+      _log('清空表 $tableName 失败: $e');
+      rethrow;
+    }
+  }
+
+  /// 获取数据库统计信息
+  Future<Map<String, int>> getDatabaseStats() async {
+    try {
+      final db = await database;
+      final stats = <String, int>{};
+
+      final tables = [
+        'habits',
+        'habit_records',
+        'tags',
+        'habit_tags',
+        'plans',
+        'plan_habits',
+        'pomodoro_records',
+        'achievements',
+        // 'users' 表已移至moment_keep_users.db数据库
+      ];
+
+      for (final table in tables) {
+        try {
+          final result =
+              await db.rawQuery('SELECT COUNT(*) as count FROM $table');
+          final count = _firstIntValue(result);
+          stats[table] = count;
+        } catch (e) {
+          _log('获取表 $table 统计失败: $e');
+          stats[table] = 0;
+        }
+      }
+
+      return stats;
+    } catch (e) {
+      _log('获取数据库统计失败: $e');
+      return {};
+    }
+  }
+
+  /// 获取当前用户ID
+  Future<String?> getCurrentUserId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(StorageKeys.userId);
+  }
+
+  /// 获取买家扩展信息（昵称、手机号等）
+  Future<Map<String, dynamic>?> getBuyerExtension(String userId) async {
+    final db = await database;
+    final results = await db.query(
+      'buyer_extensions',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (results.isEmpty) return null;
+    return results.first;
+  }
+
+  /// 获取买家默认收货地址
+  Future<Map<String, dynamic>?> getDefaultAddress(String userId) async {
+    final db = await database;
+    final results = await db.query(
+      'addresses',
+      where: 'user_id = ? AND is_default = 1',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (results.isEmpty) return null;
+    return results.first;
+  }
+
+  Future<List<Todo>> getTodos() async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+    final maps = await db.query('todos', where: 'user_id = ? OR user_id IS NULL', whereArgs: [userId], orderBy: 'created_at DESC');
+    if (maps.isEmpty) return [];
+    final results = <Todo>[];
+    for (final map in maps) {
+      try {
+        final data = <String, dynamic>{};
+        if (map['data'] != null) {
+          try {
+            data.addAll(jsonDecode(map['data'] as String) as Map<String, dynamic>);
+          } catch (_) {}
+        }
+        data['id'] = map['id'];
+        data['title'] = map['title'];
+        data['isCompleted'] = map['is_completed'] == 1;
+        if (map['date'] != null) {
+          try {
+            data['date'] = DateTime.parse(map['date'] as String).toIso8601String();
+          } catch (_) {
+            data['date'] = map['date'];
+          }
+        }
+        data['priority'] = map['priority'];
+        final kanbanColumnIdRaw = map['kanban_column_id'];
+        if (kanbanColumnIdRaw != null && (kanbanColumnIdRaw as String).isNotEmpty) {
+          data['kanbanColumnId'] = kanbanColumnIdRaw;
+        }
+        if (map['category_id'] != null) data['categoryId'] = map['category_id'];
+        if (!data.containsKey('content')) data['content'] = [];
+        if (!data.containsKey('tags')) data['tags'] = [];
+        if (!data.containsKey('subtasks')) data['subtasks'] = [];
+        if (!data.containsKey('createdAt')) {
+          if (map['created_at'] != null) {
+            try {
+              data['createdAt'] = DateTime.parse(map['created_at'] as String).toIso8601String();
+            } catch (_) {
+              data['createdAt'] = map['created_at'];
+            }
+          }
+        }
+        if (!data.containsKey('updatedAt')) {
+          if (map['created_at'] != null) {
+            try {
+              data['updatedAt'] = DateTime.parse(map['created_at'] as String).toIso8601String();
+            } catch (_) {
+              data['updatedAt'] = map['created_at'];
+            }
+          }
+        }
+        results.add(Todo.fromJson(data));
+      } catch (e) {
+        print('解析待办事项失败: $e, data: $map');
+      }
+    }
+    return results;
+  }
+
+  Future<String> insertTodo(Todo todo) async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+    final data = todo.toJson();
+    data.remove('id');
+    data.remove('title');
+    data.remove('isCompleted');
+    data.remove('date');
+    data.remove('priority');
+    data.remove('kanbanColumnId');
+    data.remove('categoryId');
+    final row = <String, dynamic>{
+      'id': todo.id,
+      'title': todo.title,
+      'is_completed': todo.isCompleted ? 1 : 0,
+      'date': todo.date?.toIso8601String() ?? todo.createdAt.toIso8601String(),
+      'priority': todo.priority.name,
+      'user_id': userId,
+      'kanban_column_id': (todo.kanbanColumnId != null && todo.kanbanColumnId!.isNotEmpty) ? todo.kanbanColumnId : null,
+      'category_id': (todo.categoryId.isNotEmpty) ? todo.categoryId : null,
+      'data': jsonEncode(data),
+      'created_at': todo.createdAt.toIso8601String(),
+    };
+    await db.insert('todos', row, conflictAlgorithm: sqflite_package.ConflictAlgorithm.replace);
+    return todo.id;
+  }
+
+  Future<void> updateTodo(Todo todo) async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+    final data = todo.toJson();
+    data.remove('id');
+    data.remove('title');
+    data.remove('isCompleted');
+    data.remove('date');
+    data.remove('priority');
+    data.remove('kanbanColumnId');
+    data.remove('categoryId');
+    final row = {
+      'title': todo.title,
+      'is_completed': todo.isCompleted ? 1 : 0,
+      'date': todo.date?.toIso8601String() ?? todo.createdAt.toIso8601String(),
+      'priority': todo.priority.name,
+      'user_id': userId,
+      'kanban_column_id': (todo.kanbanColumnId != null && todo.kanbanColumnId!.isNotEmpty) ? todo.kanbanColumnId : null,
+      'category_id': (todo.categoryId.isNotEmpty) ? todo.categoryId : null,
+      'data': jsonEncode(data),
+      'created_at': todo.createdAt.toIso8601String(),
+    };
+    await db.update('todos', row, where: 'id = ?', whereArgs: [todo.id]);
+  }
+
+  Future<void> deleteTodo(String todoId) async {
+    final db = await database;
+    await db.delete('todos', where: 'id = ?', whereArgs: [todoId]);
+  }
+
+  /// 订单相关操作
+
+  /// 插入订单
+  Future<int> insertOrder(Map<String, dynamic> order) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    return await productDb.insertOrder(order);
+  }
+
+  /// 获取用户所有订单
+  Future<List<Map<String, dynamic>>> getOrdersByUserId(String userId) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    return await productDb.getOrdersByUserId(userId);
+  }
+
+  /// 获取所有订单（管理员使用）
+  Future<List<Map<String, dynamic>>> getAllOrders() async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    return await productDb.getAllOrders();
+  }
+
+  /// 根据订单ID获取退款请求
+  Future<List<Map<String, dynamic>>> getRefundRequestsByOrderId(
+      String orderId) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    return await productDb.getRefundRequestsByOrderId(orderId);
+  }
+
+  /// 根据条件查询订单（用于筛选和搜索）
+  Future<List<Map<String, dynamic>>> getOrdersByCondition({
+    required String userId,
+    String? status,
+    DateTime? startDate,
+    DateTime? endDate,
+    String? orderType,
+    double? minAmount,
+    double? maxAmount,
+    String? searchQuery,
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 目前ProductDatabaseService没有直接提供根据条件查询订单的方法，
+    // 所以先获取所有订单，然后在内存中过滤
+    final allOrders = await productDb.getAllOrders();
+
+    // 应用过滤条件
+    final filteredOrders = allOrders.where((order) {
+      // 用户ID匹配
+      if (order['user_id'] != userId) return false;
+
+      // 状态匹配
+      if (status != null && status.isNotEmpty && order['status'] != status)
+        return false;
+
+      // 日期范围匹配
+      final orderCreatedAt =
+          DateTime.fromMillisecondsSinceEpoch(order['created_at'] as int);
+      if (startDate != null && orderCreatedAt.isBefore(startDate)) return false;
+      if (endDate != null && orderCreatedAt.isAfter(endDate)) return false;
+
+      // 其他条件可以根据需要添加
+      return true;
+    }).toList();
+
+    // 排序
+    filteredOrders.sort(
+        (a, b) => (b['created_at'] as int).compareTo(a['created_at'] as int));
+
+    // 分页
+    final startIndex = offset;
+    final endIndex = offset + limit > filteredOrders.length
+        ? filteredOrders.length
+        : offset + limit;
+    return filteredOrders.sublist(startIndex, endIndex);
+  }
+
+  /// 获取订单详情
+  Future<Map<String, dynamic>?> getOrderById(String orderId) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    final allOrders = await productDb.getAllOrders();
+    for (final order in allOrders) {
+      if (order['id'] == orderId) {
+        return order;
+      }
+    }
+    return null;
+  }
+
+  /// 更新订单状态
+  Future<int> updateOrderStatus(String orderId, String status) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 直接更新订单状态，不获取所有订单
+    return await productDb.updateOrder(orderId, {'status': status});
+  }
+
+  /// 更新订单信息
+  Future<int> updateOrder(
+      String orderId, Map<String, dynamic> orderData) async {
+    // 委托给ProductDatabaseService处理
+    debugPrint('DatabaseService: 开始更新订单 $orderId');
+    debugPrint('DatabaseService: 更新数据: $orderData');
+    final productDb = ProductDatabaseService();
+    final result = await productDb.updateOrder(orderId, orderData);
+    debugPrint('DatabaseService: 更新订单 $orderId 结果: $result');
+    return result;
+  }
+
+  /// 删除单个订单
+  Future<int> deleteOrder(String orderId) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    return await productDb.deleteOrder(orderId);
+  }
+
+  /// 根据订单ID获取商家订单
+  Future<MerchantOrder?> getMerchantOrderById(String orderId) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    final orderMap = await productDb.getOrderById(orderId);
+    if (orderMap != null) {
+      // 将Map转换为MerchantOrder对象
+      return MerchantOrder.fromMap(orderMap);
+    }
+    return null;
+  }
+
+  /// 添加操作记录
+  Future<int> addOperationLog(String orderId, String operator, String action,
+      String? description) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    return await productDb.addOperationLog(
+        orderId, operator, action, description);
+  }
+
+  /// 根据订单ID获取操作记录
+  Future<List<Map<String, dynamic>>> getOperationLogsByOrderId(
+      String orderId) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    return await productDb.getOperationLogsByOrderId(orderId);
+  }
+
+  /// 批量删除订单
+  Future<int> deleteOrders(List<String> orderIds) async {
+    if (orderIds.isEmpty) return 0;
+
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    int deletedCount = 0;
+
+    for (final orderId in orderIds) {
+      final result = await productDb.deleteOrder(orderId);
+      if (result > 0) deletedCount++;
+    }
+
+    return deletedCount;
+  }
+
+  /// 购物车相关操作
+  /// 添加商品到购物车
+  Future<int> addToCart(StarProduct product, int quantity) async {
+    final productDb = ProductDatabaseService();
+    final userId = await getCurrentUserId() ?? 'default_user';
+    return await productDb.addToCart(product, quantity, userId);
+  }
+
+  /// 获取用户购物车商品
+  Future<List<CartItem>> getCartItems(String userId) async {
+    final productDb = ProductDatabaseService();
+    final items = await productDb.getCartItems(userId);
+    return items
+        .map((item) => CartItem(
+              id: item['id'] as int,
+              productId: item['product_id'] as int,
+              product: item['product'] as StarProduct,
+              quantity: item['quantity'] as int,
+              createdAt: DateTime.now(),
+              updatedAt: DateTime.now(),
+            ))
+        .toList();
+  }
+
+  /// 更新购物车商品数量
+  Future<int> updateCartItemQuantity(int itemId, int quantity) async {
+    final productDb = ProductDatabaseService();
+    return await productDb.updateCartItemQuantity(itemId, quantity);
+  }
+
+  /// 删除购物车商品
+  Future<int> removeFromCart(int itemId) async {
+    final productDb = ProductDatabaseService();
+    return await productDb.removeFromCart(itemId);
+  }
+
+  /// 清空购物车
+  Future<int> clearCart() async {
+    final productDb = ProductDatabaseService();
+    final userId = await getCurrentUserId() ?? 'default_user';
+    return await productDb.clearCart(userId);
+  }
+
+  /// 获取购物车商品总数
+  Future<int> getCartItemCount() async {
+    final productDb = ProductDatabaseService();
+    final userId = await getCurrentUserId() ?? 'default_user';
+    return await productDb.getCartItemCount(userId);
+  }
+
+  /// 退积分申请相关操作
+
+  /// 插入退积分申请
+  Future<int> insertRefundRequest(Map<String, dynamic> request) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 目前ProductDatabaseService没有直接提供插入退积分申请的方法，
+    // 可以考虑在ProductDatabaseService中添加该方法
+    return 0;
+  }
+
+  /// 获取用户的退积分申请
+  Future<List<Map<String, dynamic>>> getRefundRequestsByUserId(
+      String userId) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 目前ProductDatabaseService没有直接提供获取退积分申请的方法，
+    // 可以考虑在ProductDatabaseService中添加该方法
+    return [];
+  }
+
+  /// 获取所有退积分申请（管理员使用）
+  Future<List<Map<String, dynamic>>> getAllRefundRequests() async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 目前ProductDatabaseService没有直接提供获取所有退积分申请的方法，
+    // 可以考虑在ProductDatabaseService中添加该方法
+    return [];
+  }
+
+  /// 获取退积分申请详情
+  Future<Map<String, dynamic>?> getRefundRequestById(int requestId) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 目前ProductDatabaseService没有直接提供获取退积分申请详情的方法，
+    // 可以考虑在ProductDatabaseService中添加该方法
+    return null;
+  }
+
+  /// 更新退积分申请状态
+  Future<int> updateRefundRequestStatus(
+      int requestId, String status, String? approvedBy) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 目前ProductDatabaseService没有直接提供更新退积分申请状态的方法，
+    // 可以考虑在ProductDatabaseService中添加该方法
+    return 0;
+  }
+
+  /// 退积分设置相关操作
+
+  /// 获取退积分设置
+  Future<Map<String, dynamic>?> getRefundSettings() async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 目前ProductDatabaseService没有直接提供获取退积分设置的方法，
+    // 可以考虑在ProductDatabaseService中添加该方法
+    return null;
+  }
+
+  /// 更新退积分设置
+  Future<int> updateRefundSettings(Map<String, dynamic> settings) async {
+    // 委托给ProductDatabaseService处理
+    final productDb = ProductDatabaseService();
+    // 目前ProductDatabaseService没有直接提供更新退积分设置的方法，
+    // 可以考虑在ProductDatabaseService中添加该方法
+    return 0;
+  }
+
+  /// 辅助方法：从查询结果中提取第一个整数值
+  int _firstIntValue(List<Map<String, dynamic>> result) {
+    if (result.isEmpty) return 0;
+    final value = result.first.values.first;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value.toString()) ?? 0;
+  }
+
+  /// 检查当前用户是否为管理员
+  Future<bool> _isCurrentUserAdmin() async {
+    final currentUser = await getCurrentUserId();
+    if (currentUser == null) {
+      return false;
+    }
+
+    // 使用UserDatabaseService检查用户是否为管理员
+    final user = await UserDatabaseService().getUserById(currentUser);
+    // 管理员用户类型为2
+    return user != null && user['user_type'] == 2;
+  }
+
+  /// 检查表是否存在
+  Future<bool> tableExists(String tableName) async {
+    final db = await database;
+    final result = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='$tableName'");
+    return result.isNotEmpty;
+  }
+
+  /// 获取数据库路径
+  Future<String> getDatabasePath() async {
+    if (kIsWeb) {
+      return 'mock_database'; // Web环境返回模拟路径
+    }
+
+    final directory = await _getDocumentsDirectory();
+    if (directory == null) {
+      throw Exception('Unable to access documents directory');
+    }
+
+    return path_package.join(directory.path, _databaseName);
+  }
+
+  /// 插入日记（自动加密内容）
+  Future<int> insertJournal(Map<String, dynamic> journal) async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+
+    // 加密日记内容
+    final content = journal['content'] as String;
+    final encryptedContent = await EncryptionHelper.encrypt(content);
+
+    // 将tags转换为JSON字符串
+    final tagsJson = jsonEncode(journal['tags'] ?? []);
+
+    // 创建符合数据库字段名的日记对象
+    final dbJournal = {
+      'category_id': int.tryParse(journal['categoryId'] ?? '0') ?? 0,
+      'title': journal['title'] ?? '',
+      'content': encryptedContent,
+      'tags': tagsJson,
+      'date': journal['date'] ?? DateTime.now().toIso8601String(),
+      'user_id': userId,
+      'created_at': journal['createdAt'] ?? DateTime.now().toIso8601String(),
+      'updated_at': journal['updatedAt'] ?? DateTime.now().toIso8601String(),
+      // 默认值
+      'type': 'normal',
+      'attachments': jsonEncode([]),
+      'mistake_meta': null,
+    };
+
+    // 插入数据库
+    final insertedId = await db.insert('journals', dbJournal);
+    debugPrint('日记插入成功，ID: $insertedId');
+    return insertedId;
+  }
+
+  /// 查询所有日记（自动解密内容）
+  Future<List<Map<String, dynamic>>> getJournals({String? targetUserId}) async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+
+    final isAdmin = await _isCurrentUserAdmin();
+    String? whereClause;
+    List<Object?> whereArgs = [];
+
+    // 如果是管理员，可以指定targetUserId获取特定用户的日记，或者获取所有用户的日记
+    if (isAdmin) {
+      if (targetUserId != null) {
+        whereClause = 'user_id = ?';
+        whereArgs = [targetUserId];
+      }
+      // 否则获取所有日记，不添加where条件
+    } else {
+      // 非管理员只能获取自己的日记
+      whereClause = 'user_id = ?';
+      whereArgs = [userId];
+    }
+
+    // 从数据库获取日记
+    final journalList = await db.query('journals',
+        where: whereClause, whereArgs: whereArgs, orderBy: 'date DESC');
+
+    // 创建可变副本，避免修改只读Map
+    final journals = <Map<String, dynamic>>[];
+
+    // 解密每个日记的内容并转换字段名
+    for (final journal in journalList) {
+      try {
+        // 解密内容
+        final encryptedContent = journal['content'] as String;
+        final decryptedContent =
+            await EncryptionHelper.decrypt(encryptedContent);
+
+        // 转换字段名：从下划线命名法转换为驼峰命名法
+        final decryptedJournal = {
+          'id': journal['id']?.toString() ?? '',
+          'categoryId': journal['category_id']?.toString() ?? '',
+          'title': journal['title'] ?? '',
+          'content': decryptedContent,
+          'tags': jsonDecode(journal['tags'] ?? '[]'),
+          'date': journal['date'] ?? '',
+          'createdAt': journal['created_at'] ?? '',
+          'updatedAt': journal['updated_at'] ?? '',
+          'subject': journal['subject'],
+          'remarks': journal['remarks'],
+        };
+
+        journals.add(decryptedJournal);
+      } catch (e) {
+        debugPrint('处理日记失败: $e');
+        // 如果处理失败，跳过该日记
+        continue;
+      }
+    }
+
+    return journals;
+  }
+
+  /// 根据ID查询日记（自动解密内容）
+  Future<Map<String, dynamic>?> getJournalById(int id) async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+
+    final isAdmin = await _isCurrentUserAdmin();
+    String whereClause;
+    List<Object?> whereArgs;
+
+    if (isAdmin) {
+      // 管理员可以获取任意日记
+      whereClause = 'id = ?';
+      whereArgs = [id];
+    } else {
+      // 非管理员只能获取自己的日记
+      whereClause = 'id = ? AND user_id = ?';
+      whereArgs = [id, userId];
+    }
+
+    // 从数据库获取日记
+    final journals = await db.query(
+      'journals',
+      where: whereClause,
+      whereArgs: whereArgs,
+      limit: 1,
+    );
+
+    if (journals.isEmpty) {
+      return null;
+    }
+
+    try {
+      // 解密日记内容
+      final encryptedContent = journals.first['content'] as String;
+      final decryptedContent = await EncryptionHelper.decrypt(encryptedContent);
+
+      // 转换字段名：从下划线命名法转换为驼峰命名法
+      final decryptedJournal = {
+        'id': journals.first['id']?.toString() ?? '',
+        'categoryId': journals.first['category_id']?.toString() ?? '',
+        'title': journals.first['title'] ?? '',
+        'content': decryptedContent,
+        'tags': jsonDecode(journals.first['tags'] ?? '[]'),
+        'date': journals.first['date'] ?? '',
+        'createdAt': journals.first['created_at'] ?? '',
+        'updatedAt': journals.first['updated_at'] ?? '',
+        'subject': journals.first['subject'],
+        'remarks': journals.first['remarks'],
+      };
+
+      return decryptedJournal;
+    } catch (e) {
+      debugPrint('处理日记失败: $e');
+      return null;
+    }
+  }
+
+  /// 更新日记（自动加密内容）
+  Future<int> updateJournal(int id, Map<String, dynamic> journal) async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+
+    final isAdmin = await _isCurrentUserAdmin();
+    String whereClause;
+    List<Object?> whereArgs;
+
+    if (isAdmin) {
+      // 管理员可以更新任意日记
+      whereClause = 'id = ?';
+      whereArgs = [id];
+    } else {
+      // 非管理员只能更新自己的日记
+      whereClause = 'id = ? AND user_id = ?';
+      whereArgs = [id, userId];
+    }
+
+    // 创建符合数据库字段名的更新对象
+    final updateData = <String, dynamic>{};
+
+    // 处理每个字段的映射
+    if (journal.containsKey('categoryId')) {
+      updateData['category_id'] =
+          int.tryParse(journal['categoryId'] ?? '0') ?? 0;
+    }
+
+    if (journal.containsKey('title')) {
+      updateData['title'] = journal['title'];
+    }
+
+    if (journal.containsKey('content')) {
+      // 加密日记内容
+      final content = journal['content'] as String;
+      final encryptedContent = await EncryptionHelper.encrypt(content);
+      updateData['content'] = encryptedContent;
+    }
+
+    if (journal.containsKey('tags')) {
+      // 将tags转换为JSON字符串
+      updateData['tags'] = jsonEncode(journal['tags'] ?? []);
+    }
+
+    if (journal.containsKey('date')) {
+      updateData['date'] = journal['date'];
+    }
+
+    if (journal.containsKey('createdAt')) {
+      updateData['created_at'] = journal['createdAt'];
+    }
+
+    if (journal.containsKey('updatedAt')) {
+      updateData['updated_at'] = journal['updatedAt'];
+    }
+
+    // 更新数据库
+    final updatedCount = await db.update(
+      'journals',
+      updateData,
+      where: whereClause,
+      whereArgs: whereArgs,
+    );
+
+    debugPrint('日记更新成功，影响行数: $updatedCount');
+    return updatedCount;
+  }
+
+  /// 删除日记（临时删除，用于添加到回收站）
+  Future<int> deleteJournal(dynamic id) async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+
+    // 将id转换为int类型
+    final int journalId = id is String ? int.tryParse(id) ?? 0 : id as int;
+    if (journalId == 0) {
+      return 0;
+    }
+
+    final isAdmin = await _isCurrentUserAdmin();
+    String whereClause;
+    List<Object?> whereArgs;
+
+    if (isAdmin) {
+      // 管理员可以删除任意日记
+      whereClause = 'id = ?';
+      whereArgs = [journalId];
+    } else {
+      // 非管理员只能删除自己的日记
+      whereClause = 'id = ? AND user_id = ?';
+      whereArgs = [journalId, userId];
+    }
+
+    // 从数据库删除日记（仅删除记录，不删除媒体文件）
+    return await db.delete(
+      'journals',
+      where: whereClause,
+      whereArgs: whereArgs,
+    );
+  }
+
+  /// 永久删除日记（从回收站删除时调用，会删除相关媒体文件）
+  Future<void> permanentDeleteJournal(Journal journal) async {
+    await _permanentDeleteContentBlocks(journal.content);
+  }
+
+  /// 永久删除习惯（从回收站删除时调用，会删除相关媒体文件）
+  Future<List<Habit>> getAllHabits() async {
+    final db = await database;
+    final maps = await db.query('habits', orderBy: 'created_at DESC');
+    final habits = <Habit>[];
+    for (final map in maps) {
+      try {
+        final dataStr = map['data'];
+        if (dataStr == null) continue;
+        final dataJson = jsonDecode(dataStr as String) as Map<String, dynamic>;
+        habits.add(Habit.fromJson(dataJson));
+      } catch (e) {
+        debugPrint('解析习惯数据失败，跳过该记录: $e');
+      }
+    }
+    return habits;
+  }
+
+  Future<int> insertHabit(Habit habit) async {
+    final db = await database;
+    final newId = await db.insert('habits', {
+      'name': habit.name,
+      'category': habit.category,
+      'icon': habit.icon,
+      'color': habit.color,
+      'frequency': habit.frequency.toString().split('.').last,
+      'type': habit.type.toString().split('.').last,
+      'is_reminder_enabled': habit.reminderTime != null ? 1 : 0,
+      'reminder_time': habit.reminderTime?.toIso8601String(),
+      'created_at': habit.createdAt.toIso8601String(),
+      'updated_at': habit.updatedAt.toIso8601String(),
+      'data': jsonEncode(habit.toJson()),
+    });
+    final updatedHabit = habit.copyWith(id: newId.toString());
+    await db.update('habits', {
+      'data': jsonEncode(updatedHabit.toJson()),
+    }, where: 'id = ?', whereArgs: [newId]);
+    return newId;
+  }
+
+  Future<int> updateHabit(Habit habit) async {
+    final db = await database;
+    final habitDbId = int.tryParse(habit.id);
+    if (habitDbId != null) {
+      return await db.update(
+        'habits',
+        {
+          'name': habit.name,
+          'category': habit.category,
+          'icon': habit.icon,
+          'color': habit.color,
+          'frequency': habit.frequency.toString().split('.').last,
+          'type': habit.type.toString().split('.').last,
+          'is_reminder_enabled': habit.reminderTime != null ? 1 : 0,
+          'reminder_time': habit.reminderTime?.toIso8601String(),
+          'updated_at': habit.updatedAt.toIso8601String(),
+          'data': jsonEncode(habit.toJson()),
+        },
+        where: 'id = ?',
+        whereArgs: [habitDbId],
+      );
+    }
+    _log('updateHabit: habit.id is not numeric, trying data field lookup for id=${habit.id}');
+    final results = await db.query(
+      'habits',
+      where: "json_extract(data, '\$.id') = ?",
+      whereArgs: [habit.id],
+    );
+    if (results.isNotEmpty) {
+      final rowId = results.first['id'] as int;
+      return await db.update(
+        'habits',
+        {
+          'name': habit.name,
+          'category': habit.category,
+          'icon': habit.icon,
+          'color': habit.color,
+          'frequency': habit.frequency.toString().split('.').last,
+          'type': habit.type.toString().split('.').last,
+          'is_reminder_enabled': habit.reminderTime != null ? 1 : 0,
+          'reminder_time': habit.reminderTime?.toIso8601String(),
+          'updated_at': habit.updatedAt.toIso8601String(),
+          'data': jsonEncode(habit.toJson()),
+        },
+        where: 'id = ?',
+        whereArgs: [rowId],
+      );
+    }
+    _log('updateHabit: habit not found with id=${habit.id}');
+    return 0;
+  }
+
+  Future<String?> getUserSetting(String userId, String key) async {
+    final db = await database;
+    final results = await db.query(
+      'user_settings',
+      where: 'user_id = ? AND key = ?',
+      whereArgs: [userId, key],
+    );
+    if (results.isNotEmpty) {
+      return results.first['value'] as String;
+    }
+    return null;
+  }
+
+  Future<int> setUserSetting(String userId, String key, String value) async {
+    final db = await database;
+    return await db.insert(
+      'user_settings',
+      {
+        'user_id': userId,
+        'key': key,
+        'value': value,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: sqflite_package.ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<Map<String, String>> getAllUserSettings(String userId) async {
+    final db = await database;
+    final results = await db.query(
+      'user_settings',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
+    final settings = <String, String>{};
+    for (final row in results) {
+      settings[row['key'] as String] = row['value'] as String;
+    }
+    return settings;
+  }
+
+  Future<int> deleteUserSetting(String userId, String key) async {
+    final db = await database;
+    return await db.delete(
+      'user_settings',
+      where: 'user_id = ? AND key = ?',
+      whereArgs: [userId, key],
+    );
+  }
+
+  Future<int> insertRecycleBinItem(String userId, String itemType, String itemData, String deletedAt, {String? expiresAt}) async {
+    final db = await database;
+    return await db.insert('recycle_bin', {
+      'user_id': userId,
+      'item_type': itemType,
+      'item_data': itemData,
+      'deleted_at': deletedAt,
+      'expires_at': expiresAt,
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getRecycleBinItems(String userId) async {
+    final db = await database;
+    return await db.query(
+      'recycle_bin',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      orderBy: 'deleted_at DESC',
+    );
+  }
+
+  Future<int> deleteRecycleBinItem(int id) async {
+    final db = await database;
+    return await db.delete('recycle_bin', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> clearRecycleBin(String userId) async {
+    final db = await database;
+    return await db.delete('recycle_bin', where: 'user_id = ?', whereArgs: [userId]);
+  }
+
+  Future<int> clearExpiredRecycleBinItems() async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+    return await db.delete('recycle_bin', where: 'expires_at IS NOT NULL AND expires_at < ?', whereArgs: [now]);
+  }
+
+  Future<int> restoreRecycleBinItem(int id) async {
+    final db = await database;
+    return await db.delete('recycle_bin', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<List<Map<String, dynamic>>> getCategories(String userId) async {
+    final db = await database;
+    return await db.query(
+      'categories',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      orderBy: 'sort_order ASC, id ASC',
+    );
+  }
+
+  Future<int> insertCategory(String userId, Map<String, dynamic> categoryData) async {
+    final db = await database;
+    final data = Map<String, dynamic>.from(categoryData);
+    data['user_id'] = userId;
+    if (!data.containsKey('created_at')) {
+      data['created_at'] = DateTime.now().toIso8601String();
+    }
+    if (!data.containsKey('updated_at')) {
+      data['updated_at'] = DateTime.now().toIso8601String();
+    }
+    return await db.insert('categories', data);
+  }
+
+  Future<int> updateCategory(int id, Map<String, dynamic> categoryData) async {
+    final db = await database;
+    final data = Map<String, dynamic>.from(categoryData);
+    data['updated_at'] = DateTime.now().toIso8601String();
+    data.remove('id');
+    return await db.update('categories', data, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> deleteCategory(int id) async {
+    final db = await database;
+    return await db.delete('categories', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> clearCategories(String userId) async {
+    final db = await database;
+    return await db.delete('categories', where: 'user_id = ?', whereArgs: [userId]);
+  }
+
+  Future<int> deleteHabit(String habitId) async {
+    final db = await database;
+    final habitDbId = int.tryParse(habitId);
+    if (habitDbId != null) {
+      return await db.delete('habits', where: 'id = ?', whereArgs: [habitDbId]);
+    }
+    _log('deleteHabit: habitId is not numeric, trying data field lookup for id=$habitId');
+    final results = await db.query(
+      'habits',
+      where: "json_extract(data, '\$.id') = ?",
+      whereArgs: [habitId],
+    );
+    if (results.isNotEmpty) {
+      final rowId = results.first['id'] as int;
+      return await db.delete('habits', where: 'id = ?', whereArgs: [rowId]);
+    }
+    _log('deleteHabit: habit not found with id=$habitId');
+    return 0;
+  }
+
+  Future<void> permanentDeleteHabit(Habit habit) async {
+    await _permanentDeleteContentBlocks(habit.content);
+  }
+
+  /// 永久删除待办事项（从回收站删除时调用，会删除相关媒体文件）
+  Future<void> permanentDeleteTodo(Todo todo) async {
+    await _permanentDeleteContentBlocks(todo.content);
+  }
+
+  /// 永久删除内容块中的媒体文件
+  Future<void> _permanentDeleteContentBlocks(
+      List<ContentBlock> contentBlocks) async {
+    // 提取所有内容块中的文件路径
+    final filePaths = <String>{};
+
+    // 遍历所有内容块
+    for (final block in contentBlocks) {
+      if (block.type == ContentBlockType.text &&
+          block.attributes['type'] == 'quill') {
+        try {
+          final decoded = jsonDecode(block.data) as List;
+          final doc = flutter_quill.Document.fromJson(decoded);
+          final delta = doc.toDelta();
+
+          // 提取嵌入的文件路径
+          for (final op in delta.toList()) {
+            if (op.data is Map) {
+              final data = op.data as Map;
+
+              // 提取图片路径
+              if (data.containsKey('image')) {
+                filePaths.add(data['image'] as String);
+              }
+
+              // 提取自定义嵌入的文件路径
+              if (data.containsKey('custom')) {
+                final customData = data['custom'];
+                Map<String, dynamic> embedData;
+
+                if (customData is String) {
+                  embedData = jsonDecode(customData);
+                } else if (customData is Map) {
+                  embedData = Map<String, dynamic>.from(customData);
+                } else {
+                  continue;
+                }
+
+                // 处理不同类型的嵌入
+                if (embedData.containsKey('video')) {
+                  final videoInfo = embedData['video'];
+                  String? videoPath;
+
+                  if (videoInfo is String) {
+                    // 如果是字符串，尝试解析为JSON
+                    try {
+                      final videoJson =
+                          jsonDecode(videoInfo) as Map<String, dynamic>;
+                      videoPath = videoJson['path'] as String?;
+                    } catch (e) {
+                      // 如果解析失败，直接使用字符串作为路径
+                      videoPath = videoInfo;
+                    }
+                  } else if (videoInfo is Map &&
+                      videoInfo.containsKey('path')) {
+                    videoPath = videoInfo['path'] as String?;
+                  }
+
+                  if (videoPath != null) {
+                    filePaths.add(videoPath);
+                  }
+                } else if (embedData.containsKey('audio')) {
+                  final audioInfo = embedData['audio'];
+                  String? audioPath;
+
+                  if (audioInfo is String) {
+                    // 如果是字符串，尝试解析为JSON
+                    try {
+                      final audioJson =
+                          jsonDecode(audioInfo) as Map<String, dynamic>;
+                      audioPath = audioJson['path'] as String?;
+                    } catch (e) {
+                      // 如果解析失败，直接使用字符串作为路径
+                      audioPath = audioInfo;
+                    }
+                  } else if (audioInfo is Map &&
+                      audioInfo.containsKey('path')) {
+                    audioPath = audioInfo['path'] as String?;
+                  }
+
+                  if (audioPath != null) {
+                    filePaths.add(audioPath);
+                  }
+                } else if (embedData.containsKey('file')) {
+                  final fileInfo = embedData['file'];
+                  String? filePath;
+
+                  if (fileInfo is String) {
+                    // 如果是字符串，尝试解析为JSON
+                    try {
+                      final fileJson =
+                          jsonDecode(fileInfo) as Map<String, dynamic>;
+                      filePath = fileJson['path'] as String?;
+                    } catch (e) {
+                      // 如果解析失败，直接使用字符串作为路径
+                      filePath = fileInfo;
+                    }
+                  } else if (fileInfo is Map && fileInfo.containsKey('path')) {
+                    filePath = fileInfo['path'] as String?;
+                  }
+
+                  if (filePath != null) {
+                    filePaths.add(filePath);
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('Error parsing content block: $e');
+        }
+      }
+    }
+
+    // 使用StorageService删除所有相关文件
+    final storageService = StorageService();
+    for (final filePath in filePaths) {
+      try {
+        await storageService.deleteFile(filePath);
+      } catch (e) {
+        // 忽略文件删除错误
+      }
+    }
+  }
+
+  /// 获取所有用户（管理员权限）
+  Future<List<Map<String, dynamic>>> getAllUsers() async {
+    // 获取当前用户
+    final currentUser = await getCurrentUserId();
+    if (currentUser == null) {
+      return [];
+    }
+
+    // 检查当前用户是否为管理员
+    final isAdmin = await _isCurrentUserAdmin();
+    if (!isAdmin) {
+      return [];
+    }
+
+    // 使用UserDatabaseService获取所有用户
+    return await UserDatabaseService().getAllUsers();
+  }
+
+  /// 删除用户（管理员权限）
+  Future<int> deleteUser(String userId) async {
+    // 获取当前用户
+    final currentUser = await getCurrentUserId();
+    if (currentUser == null) {
+      return 0;
+    }
+
+    // 检查当前用户是否为管理员
+    final isAdmin = await _isCurrentUserAdmin();
+    if (!isAdmin) {
+      return 0;
+    }
+
+    // 不允许删除自己
+    if (userId == currentUser) {
+      return 0;
+    }
+
+    // 使用UserDatabaseService删除用户
+    return await UserDatabaseService().deleteUser(userId);
+  }
+
+  /// 更新用户信息（管理员权限）
+  Future<int> updateUser(String userId, Map<String, dynamic> userData) async {
+    // 获取当前用户
+    final currentUser = await getCurrentUserId();
+    if (currentUser == null) {
+      return 0;
+    }
+
+    // 检查当前用户是否为管理员
+    final isAdmin = await _isCurrentUserAdmin();
+    if (!isAdmin) {
+      return 0;
+    }
+
+    // 使用UserDatabaseService更新用户信息
+    return await UserDatabaseService().updateUser(userId, userData, null);
+  }
+
+  /// 设置用户管理员权限（管理员权限）
+  Future<int> setUserAdminStatus(String userId, bool isAdmin) async {
+    // 获取当前用户
+    final currentUser = await getCurrentUserId();
+    if (currentUser == null) {
+      return 0;
+    }
+
+    // 检查当前用户是否为管理员
+    final currentIsAdmin = await _isCurrentUserAdmin();
+    if (!currentIsAdmin) {
+      return 0;
+    }
+
+    // 使用UserDatabaseService更新用户类型
+    // 管理员用户类型为2，普通用户类型为0
+    final userData = {'user_type': isAdmin ? 2 : 0};
+    return await UserDatabaseService().updateUser(userId, userData, null);
+  }
+
+  /// 获取用户积分（直接从数据库读取，绕开可能的问题）
+  /// 获取用户积分（使用 UserDatabaseService 从正确的数据库读取）
+  Future<double> getUserPoints(String userId) async {
+    try {
+      _log('从 UserDatabaseService 获取用户 $userId 的积分');
+
+      final userDbService = UserDatabaseService();
+      final userData = await userDbService.getUserById(userId);
+
+      if (userData != null) {
+        // points 在 buyer_extension 里面
+        if (userData.containsKey('buyer_extension') &&
+            userData['buyer_extension'] != null) {
+          final buyerExtension = userData['buyer_extension'] as Map<String, dynamic>;
+          if (buyerExtension.containsKey('points')) {
+            final points = buyerExtension['points'];
+            _log('从 buyer_extension 读取到的积分值: $points, 类型: ${points.runtimeType}');
+
+            if (points is int) {
+              return points.toDouble();
+            } else if (points is double) {
+              return points;
+            } else if (points != null) {
+              return double.tryParse(points.toString()) ?? 0.0;
+            }
+          }
+        }
+
+        // 兼容其他可能在根级别的数据
+        if (userData.containsKey('points')) {
+          final points = userData['points'];
+          _log('从根级别读取到的积分值: $points, 类型: ${points.runtimeType}');
+
+          if (points is int) {
+            return points.toDouble();
+          } else if (points is double) {
+            return points;
+          } else if (points != null) {
+            return double.tryParse(points.toString()) ?? 0.0;
+          }
+        }
+      }
+
+      _log('没有找到用户 $userId 的积分记录，返回0');
+      return 0.0;
+    } catch (e) {
+      _log('获取用户积分失败: $e');
+      return 0.0;
+    }
+  }
+
+  /// 添加评价
+  /// 委托给 ProductDatabaseService，写入 products.db 的 reviews 表
+  Future<void> addReview(Map<String, dynamic> reviewData) async {
+    try {
+      final productDb = ProductDatabaseService();
+      await productDb.addReview(reviewData);
+    } catch (e) {
+      debugPrint('添加评价失败: $e');
+    }
+  }
+
+  /// 获取订单的评价
+  /// 委托给 ProductDatabaseService，查询 products.db 的 reviews 表
+  Future<List<Map<String, dynamic>>> getReviewsByOrderId(String orderId) async {
+    try {
+      final productDb = ProductDatabaseService();
+      return await productDb.getReviewsByOrderId(orderId);
+    } catch (e) {
+      debugPrint('获取订单评价失败: $e');
+      return [];
+    }
+  }
+
+  /// 获取商品的评价
+  /// 委托给 ProductDatabaseService，查询 products.db 的 reviews 表
+  Future<List<Map<String, dynamic>>> getReviewsByProductId(
+      String productId) async {
+    try {
+      final productDb = ProductDatabaseService();
+      return await productDb.getReviewsByProductId(int.tryParse(productId) ?? 0);
+    } catch (e) {
+      debugPrint('获取商品评价失败: $e');
+      return [];
+    }
+  }
+
+  /// 更新评价
+  /// 委托给 ProductDatabaseService，更新 products.db 的 reviews 表
+  Future<void> updateReview(
+      String reviewId, Map<String, dynamic> updates) async {
+    try {
+      final productDb = ProductDatabaseService();
+      await productDb.updateReview(reviewId, updates);
+      _log('Updated review: $reviewId');
+    } catch (e) {
+      debugPrint('更新评价失败: $e');
+    }
+  }
+
+  /// 更新用户积分并创建账单记录
+  Future<void> updateUserPoints(String userId, double points,
+      {String? description, String? transactionType, String? relatedId, String? ruleSnapshot}) async {
+    try {
+      double currentPoints = await getUserPoints(userId);
+      final newPoints = currentPoints + points;
+
+      await UserDatabaseService().updateUser(
+        userId,
+        {},
+        {'points': newPoints},
+      );
+
+      if (points != 0) {
+          // 获取当前账单（如果没有会自动创建）
+          var currentBill = await getCurrentBill(userId);
+          // 更新账单余额
+          final newBalance = newPoints.round();
+          final newIncome =
+              points > 0 ? currentBill.income + points.round() : currentBill.income;
+          final newExpense = points < 0
+              ? currentBill.expense + (-points).round()
+              : currentBill.expense;
+          await updateBillBalance(
+            currentBill.id,
+            newBalance,
+            newIncome,
+            newExpense,
+          );
+
+          // 添加账单明细
+          final isIncome = points > 0;
+          final defaultTransactionType = isIncome ? 'reward' : 'expense';
+          final defaultDescription = isIncome ? '获得积分' : '消费积分';
+
+          await addBillItem(
+            userId,
+            currentBill.id,
+            points.abs().round(),
+            isIncome ? 'income' : 'expense',
+            transactionType ?? defaultTransactionType,
+            description ?? defaultDescription,
+            relatedId: relatedId,
+            ruleSnapshot: ruleSnapshot,
+          );
+        }
+    } catch (e) {
+      debugPrint('更新用户积分失败: $e');
+      rethrow;
+    }
+  }
+
+  /// 根据邮箱为用户充值积分
+  Future<void> rechargePointsByEmail(String email, double points) async {
+    try {
+      final userDatabaseService = UserDatabaseService();
+      final user = await userDatabaseService.getUserByEmail(email);
+      if (user != null) {
+        final userId = user['user_id'];
+        await updateUserPoints(userId, points);
+      }
+    } catch (e) {
+      debugPrint('根据邮箱充值积分失败: $e');
+      rethrow;
+    }
+  }
+
+  // -------------------- 优惠券、红包和购物卡相关方法 --------------------
+  
+  /// 获取用户的优惠券列表
+  /// 查询本地 moment_keep.db 的 user_coupons，再从 ProductDatabaseService 获取优惠券详情
+  /// [userId] 支持用户ID或邮箱，传入邮箱（含@）时自动解析为userId
+  Future<List<Map<String, dynamic>>> getUserCoupons(String userId) async {
+    try {
+      String resolvedUserId = userId;
+      if (userId.contains('@')) {
+        final userDbService = UserDatabaseService();
+        final user = await userDbService.getUserByEmail(userId);
+        if (user != null) {
+          resolvedUserId = user['user_id'] as String? ?? userId;
+        } else {
+          return [];
+        }
+      }
+
+      final db = await database;
+      final userCoupons = await db.rawQuery(
+        '''SELECT uc.* FROM user_coupons uc
+           WHERE uc.user_id = ? 
+              OR uc.user_id = 'all'
+              OR uc.user_id IN (
+                SELECT ml.name FROM member_levels ml WHERE ml.user_id = ?
+              )
+           ORDER BY uc.created_at DESC''',
+        [resolvedUserId, resolvedUserId],
+      );
+
+      if (userCoupons.isEmpty) return [];
+
+      final productDb = ProductDatabaseService();
+      final allCoupons = await productDb.getAllCoupons();
+      final couponMap = {for (var c in allCoupons) c.id: c};
+
+      final results = <Map<String, dynamic>>[];
+      for (final uc in userCoupons) {
+        final couponId = uc['coupon_id'] as int?;
+        final coupon = couponId != null ? couponMap[couponId] : null;
+        results.add({
+          'id': uc['id'],
+          'user_id': uc['user_id'],
+          'name': coupon?.name ?? '',
+          'amount': coupon?.value ?? 0,
+          'condition': coupon?.minAmount ?? 0,
+          'validity': uc['expires_at'] == null
+              ? '永久'
+              : DateTime.fromMillisecondsSinceEpoch(uc['expires_at'] as int)
+                  .toIso8601String()
+                  .split('T')[0],
+          'status': uc['status'] == 'unused'
+              ? '可用'
+              : uc['status'] == 'used'
+                  ? '已使用'
+                  : uc['status'] == 'expired'
+                      ? '已过期'
+                      : uc['status'],
+          'type': coupon?.type ?? '满减券',
+          'reward_type': coupon?.rewardType ?? 'cash',
+          'discount': coupon?.type == 'discount'
+              ? 1.0 - ((coupon?.value ?? 0) * 1.0 / 100)
+              : 1.0,
+          'created_at': uc['created_at'],
+          'updated_at': coupon?.updatedAt.millisecondsSinceEpoch,
+          'used_at': uc['used_at'],
+          'used_order_id': uc['order_id'],
+        });
+      }
+      return results;
+    } catch (e) {
+      _log('Error getting user coupons: $e');
+      return [];
+    }
+  }
+
+  /// 向 moment_keep.db 写入用户优惠券记录
+  Future<int> insertUserCoupon(Map<String, dynamic> userCoupon) async {
+    final db = await database;
+    return await db.insert('user_coupons', {
+      'user_id': userCoupon['user_id'],
+      'coupon_id': userCoupon['coupon_id'],
+      'status': userCoupon['status'] ?? 'unused',
+      'used_at': userCoupon['used_at'],
+      'order_id': userCoupon['order_id'],
+      'created_at': userCoupon['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+      'expires_at': userCoupon['expires_at'],
+    });
+  }
+  
+  Future<int> updateUserCouponStatus(int userCouponId, String status) async {
+    final db = await database;
+    return await db.update(
+      'user_coupons',
+      {
+        'status': status,
+        'used_at': status == 'used' ? DateTime.now().millisecondsSinceEpoch : null,
+      },
+      where: 'id = ?',
+      whereArgs: [userCouponId],
+    );
+  }
+  
+  Future<int> updateRedPacketClaimStatus(int claimId, String status) async {
+    final db = await database;
+    return await db.update(
+      'red_packet_claims',
+      {
+        'status': status,
+        'used_at': status == 'used' ? DateTime.now().millisecondsSinceEpoch : null,
+      },
+      where: 'id = ?',
+      whereArgs: [claimId],
+    );
+  }
+  
+  /// 获取用户的红包列表
+  /// 查询本地 moment_keep.db 的 red_packet_claims，再从 ProductDatabaseService 获取红包详情
+  Future<List<Map<String, dynamic>>> getUserRedPackets(String userId) async {
+    try {
+      String resolvedUserId = userId;
+      if (userId.contains('@')) {
+        final userDbService = UserDatabaseService();
+        final user = await userDbService.getUserByEmail(userId);
+        if (user != null) {
+          resolvedUserId = user['user_id'] as String? ?? userId;
+        } else {
+          return [];
+        }
+      }
+
+      final db = await database;
+      final claims = await db.rawQuery(
+        '''SELECT rpc.* FROM red_packet_claims rpc
+           WHERE rpc.user_id = ? 
+              OR rpc.user_id = 'all'
+              OR rpc.user_id IN (
+                SELECT ml.name FROM member_levels ml WHERE ml.user_id = ?
+              )
+           ORDER BY rpc.claimed_at DESC''',
+        [resolvedUserId, resolvedUserId],
+      );
+
+      if (claims.isEmpty) return [];
+
+      final productDb = ProductDatabaseService();
+      final allRedPackets = await productDb.getAllRedPackets();
+      final rpMap = {for (var rp in allRedPackets) rp.id: rp};
+
+      final results = <Map<String, dynamic>>[];
+      for (final rpc in claims) {
+        final rpId = rpc['red_packet_id'] as int?;
+        final rp = rpId != null ? rpMap[rpId] : null;
+        results.add({
+          'id': rpc['id'],
+          'user_id': rpc['user_id'],
+          'name': rp?.name ?? '',
+          'amount': rpc['amount'],
+          'validity': rp?.endTime == null
+              ? '永久'
+              : rp!.endTime!.toIso8601String().split('T')[0],
+          'status': '可用',
+          'type': rp?.type ?? '现金红包',
+          'reward_type': rp?.rewardType ?? 'cash',
+          'created_at': rpc['claimed_at'],
+          'updated_at': rp?.updatedAt.millisecondsSinceEpoch,
+        });
+      }
+      return results;
+    } catch (e) {
+      _log('Error getting user red packets: $e');
+      return [];
+    }
+  }
+  
+  /// 获取用户的购物卡列表
+  /// 委托给 ProductDatabaseService，查询 products.db 中的 shopping_cards
+  Future<List<Map<String, dynamic>>> getUserShoppingCards(String userId) async {
+    try {
+      final productDb = ProductDatabaseService();
+      final cards = await productDb.getAllShoppingCards(userId: userId);
+      return cards.map((card) => {
+        'id': card.id.toString(),
+        'user_id': card.userId ?? '',
+        'name': card.name,
+        'amount': card.totalAmount,
+        'validity': card.validTo != null
+            ? card.validTo!.toIso8601String().split('T')[0]
+            : '永久',
+        'status': card.status == 'active' ? '可用' : card.status == 'used' ? '已使用' : card.status,
+        'type': '电子卡',
+        'created_at': card.createdAt.millisecondsSinceEpoch,
+        'updated_at': card.updatedAt.millisecondsSinceEpoch,
+      }).toList();
+    } catch (e) {
+      _log('Error getting user shopping cards: $e');
+      return [];
+    }
+  }
+  
+  /// 获取用户的可用优惠券数量
+  /// 查询本地 moment_keep.db 的 user_coupons 中未使用且未过期的数量
+  Future<int> getUserCouponCount(String userId) async {
+    try {
+      String resolvedUserId = userId;
+      if (userId.contains('@')) {
+        final userDbService = UserDatabaseService();
+        final user = await userDbService.getUserByEmail(userId);
+        if (user != null) {
+          resolvedUserId = user['user_id'] as String? ?? userId;
+        } else {
+          return 0;
+        }
+      }
+
+      final db = await database;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final result = await db.rawQuery(
+        '''SELECT COUNT(*) as count FROM user_coupons uc
+           WHERE uc.status = ? AND (uc.expires_at IS NULL OR uc.expires_at > ?)
+             AND (uc.user_id = ? 
+                  OR uc.user_id = 'all'
+                  OR uc.user_id IN (
+                    SELECT ml.name FROM member_levels ml WHERE ml.user_id = ?
+                  ))''',
+        ['unused', now, resolvedUserId, resolvedUserId],
+      );
+      return result.isNotEmpty ? int.tryParse(result[0]['count'].toString()) ?? 0 : 0;
+    } catch (e) {
+      _log('Error getting user coupon count: $e');
+      return 0;
+    }
+  }
+  
+  /// 向 moment_keep.db 写入用户红包领取记录
+  Future<int> insertRedPacketClaim(Map<String, dynamic> claim) async {
+    final db = await database;
+    return await db.insert('red_packet_claims', {
+      'red_packet_id': claim['red_packet_id'],
+      'user_id': claim['user_id'],
+      'amount': claim['amount'],
+      'claimed_at': claim['claimed_at'] ?? DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  /// 获取用户的可用红包数量
+  /// 查询本地 moment_keep.db 的 red_packet_claims 中用户的领取数量
+  Future<int> getUserRedPacketCount(String userId) async {
+    try {
+      String resolvedUserId = userId;
+      if (userId.contains('@')) {
+        final userDbService = UserDatabaseService();
+        final user = await userDbService.getUserByEmail(userId);
+        if (user != null) {
+          resolvedUserId = user['user_id'] as String? ?? userId;
+        } else {
+          return 0;
+        }
+      }
+
+      final db = await database;
+      final result = await db.rawQuery(
+        '''SELECT COUNT(*) as count FROM red_packet_claims rpc
+           WHERE rpc.user_id = ? 
+              OR rpc.user_id = 'all'
+              OR rpc.user_id IN (
+                SELECT ml.name FROM member_levels ml WHERE ml.user_id = ?
+              )''',
+        [resolvedUserId, resolvedUserId],
+      );
+      return result.isNotEmpty ? int.tryParse(result[0]['count'].toString()) ?? 0 : 0;
+    } catch (e) {
+      _log('Error getting user red packet count: $e');
+      return 0;
+    }
+  }
+  
+  /// 获取用户的可用购物卡数量
+  /// 委托给 ProductDatabaseService，查询 products.db 中的 shopping_cards
+  Future<int> getUserShoppingCardCount(String userId) async {
+    try {
+      final productDb = ProductDatabaseService();
+      final cards = await productDb.getAllShoppingCards(userId: userId, status: 'active');
+      return cards.length;
+    } catch (e) {
+      _log('Error getting user shopping card count: $e');
+      return 0;
+    }
+  }
+  
+  // 账单相关操作方法
+
+  /// 获取当前用户的账单
+  Future<Bill> getCurrentBill(String userId) async {
+    final db = await database;
+    final maps = await db.query('bills',
+        where: 'user_id = ?',
+        whereArgs: [userId],
+        orderBy: 'created_at DESC',
+        limit: 1);
+
+    // 获取当前用户的积分 - 直接从buyer_extensions表读取，而不是从UserDatabaseService
+    final currentPoints = await getUserPoints(userId);
+    final currentPointsInt = currentPoints.round();
+
+    if (maps.isNotEmpty) {
+      final bill = Bill.fromMap(maps.first);
+
+      // 检查账单余额是否与用户当前积分一致，如果不一致，就更新账单余额
+      if (bill.balance != currentPointsInt) {
+        _log('账单余额不一致，需要更新。账单: ${bill.balance}, 实际积分: $currentPointsInt');
+        
+        // 重新计算正确的收入和支出，从bill_items表直接计算
+        final allBillItems = await db.query(
+          'bill_items',
+          where: 'user_id = ?',
+          whereArgs: [userId],
+        );
+        
+        int totalIncome = 0;
+        int totalExpense = 0;
+        
+        for (final item in allBillItems) {
+          final type = item['type'] as String?;
+          final amount = item['amount'] as num?;
+          
+          if (type == 'income' && amount != null) {
+            totalIncome += amount.toInt();
+          } else if (type == 'expense' && amount != null) {
+            totalExpense += amount.toInt();
+          }
+        }
+        
+        _log('重新计算 - 收入: $totalIncome, 支出: $totalExpense, 余额: $currentPointsInt');
+
+        await updateBillBalance(
+          bill.id,
+          currentPointsInt,
+          totalIncome,
+          totalExpense,
+        );
+
+        // 返回更新后的账单
+        return Bill(
+          id: bill.id,
+          userId: bill.userId,
+          balance: currentPointsInt,
+          income: totalIncome,
+          expense: totalExpense,
+          createdAt: bill.createdAt,
+          updatedAt: DateTime.now(),
+        );
+      }
+
+      return bill;
+    }
+
+    // 如果没有找到账单，自动创建一个初始账单
+    return await createBill(userId, initialBalance: currentPointsInt);
+  }
+
+  /// 创建新账单
+  Future<Bill> createBill(String userId, {int initialBalance = 0}) async {
+    final db = await database;
+    final now = DateTime.now();
+    final bill = Bill(
+      id: 'bill_${now.millisecondsSinceEpoch}',
+      userId: userId,
+      balance: initialBalance,
+      income: 0,
+      expense: 0,
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    await db.insert('bills', bill.toMap());
+    return bill;
+  }
+
+  /// 更新账单余额
+  Future<void> updateBillBalance(
+      String billId, int balance, int income, int expense) async {
+    final db = await database;
+    await db.update(
+        'bills',
+        {
+          'balance': balance,
+          'income': income,
+          'expense': expense,
+          'updated_at': DateTime.now().millisecondsSinceEpoch
+        },
+        where: 'id = ?',
+        whereArgs: [billId]);
+  }
+
+  /// 添加账单明细
+  Future<BillItem?> getBillItemByRelatedId(String userId, String relatedId, String transactionType) async {
+    final db = await database;
+    final results = await db.query(
+      'bill_items',
+      where: 'user_id = ? AND related_id = ? AND transaction_type = ? AND type = ?',
+      whereArgs: [userId, relatedId, transactionType, 'income'],
+      orderBy: 'created_at DESC',
+      limit: 1,
+    );
+    if (results.isEmpty) return null;
+    return BillItem.fromMap(results.first);
+  }
+
+  Future<BillItem> addBillItem(String userId, String billId, int amount,
+      String type, String transactionType, String description,
+      {String? relatedId, String? ruleSnapshot}) async {
+    final db = await database;
+    final now = DateTime.now();
+    final billItem = BillItem(
+      id: 'bill_item_${now.millisecondsSinceEpoch}',
+      userId: userId,
+      billId: billId,
+      amount: amount,
+      type: type,
+      transactionType: transactionType,
+      description: description,
+      createdAt: now,
+      updatedAt: now,
+      relatedId: relatedId,
+      ruleSnapshot: ruleSnapshot,
+    );
+
+    await db.insert('bill_items', billItem.toMap());
+    return billItem;
+  }
+
+  /// 获取账单明细列表
+  Future<List<BillItem>> getBillItems(String userId,
+      {DateTime? startDate,
+      DateTime? endDate,
+      String? type,
+      String? transactionType,
+      String? searchQuery}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?'];
+    List<Object?> whereArgs = [userId];
+
+    // 添加日期条件
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    // 添加类型条件
+    if (type != null) {
+      whereConditions.add('type = ?');
+      whereArgs.add(type);
+    }
+    if (transactionType != null) {
+      whereConditions.add('transaction_type = ?');
+      whereArgs.add(transactionType);
+    }
+    
+    // 添加搜索条件
+    if (searchQuery != null && searchQuery.isNotEmpty) {
+      whereConditions.add('description LIKE ?');
+      whereArgs.add('%$searchQuery%');
+    }
+
+    final results = await db.query('bill_items',
+        where: whereConditions.join(' AND '),
+        whereArgs: whereArgs,
+        orderBy: 'created_at DESC');
+
+    return results.map<BillItem>((map) => BillItem.fromMap(map)).toList();
+  }
+
+  /// 获取账单统计信息
+  Future<Map<String, dynamic>> getBillStatistics(String userId,
+      {DateTime? startDate, DateTime? endDate}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?'];
+    List<Object?> whereArgs = [userId];
+
+    // 添加日期条件
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    // 获取所有符合条件的记录，直接计算
+    final allItems = await db.query(
+      'bill_items',
+      where: whereConditions.join(' AND '),
+      whereArgs: whereArgs,
+    );
+    
+    int totalIncome = 0;
+    int totalExpense = 0;
+    
+    for (final item in allItems) {
+      final type = item['type'] as String?;
+      final amount = item['amount'] as num?;
+      
+      if (type == 'income' && amount != null) {
+        totalIncome += amount.toInt();
+      } else if (type == 'expense' && amount != null) {
+        totalExpense += amount.toInt();
+      }
+    }
+    
+    final balance = totalIncome - totalExpense;
+    
+    _log('账单统计 - 用户: $userId, 收入: $totalIncome, 支出: $totalExpense, 余额: $balance');
+
+    return {
+      'total_income': totalIncome,
+      'total_expense': totalExpense,
+      'balance': balance
+    };
+  }
+
+  /// 获取积分统计数据
+  Future<PointsStatistics> getPointsStatistics(String userId,
+      {DateTime? startDate, DateTime? endDate}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?'];
+    List<Object?> whereArgs = [userId];
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    // 获取所有符合条件的记录，直接计算
+    final allItems = await db.query(
+      'bill_items',
+      where: whereConditions.join(' AND '),
+      whereArgs: whereArgs,
+    );
+    
+    double totalIncome = 0.0;
+    double totalExpense = 0.0;
+    int transactionCount = allItems.length;
+    
+    for (final item in allItems) {
+      final type = item['type'] as String?;
+      final amount = item['amount'] as num?;
+      
+      if (type == 'income' && amount != null) {
+        totalIncome += amount.toDouble();
+      } else if (type == 'expense' && amount != null) {
+        totalExpense += amount.toDouble();
+      }
+    }
+    
+    _log('积分统计 - 用户: $userId, 收入: $totalIncome, 支出: $totalExpense, 交易数: $transactionCount');
+
+    final trendData = await getBillTrendData(userId, startDate: startDate, endDate: endDate);
+    
+    final typeDistribution = await getBillTypeDistribution(userId, startDate: startDate, endDate: endDate);
+    
+    final incomeTypeDistribution = await getBillTypeDistribution(
+      userId, 
+      startDate: startDate, 
+      endDate: endDate,
+      type: 'income',
+    );
+    
+    final expenseTypeDistribution = await getBillTypeDistribution(
+      userId, 
+      startDate: startDate, 
+      endDate: endDate,
+      type: 'expense',
+    );
+
+    return PointsStatistics(
+      totalIncome: totalIncome,
+      totalExpense: totalExpense,
+      netIncome: totalIncome - totalExpense,
+      transactionCount: transactionCount,
+      trendData: trendData,
+      typeDistribution: typeDistribution,
+      incomeTypeDistribution: incomeTypeDistribution,
+      expenseTypeDistribution: expenseTypeDistribution,
+    );
+  }
+
+  /// 获取账单趋势数据（按天分组）
+  Future<List<TrendDataPoint>> getBillTrendData(String userId,
+      {DateTime? startDate, DateTime? endDate}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?'];
+    List<Object?> whereArgs = [userId];
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    final results = await db.rawQuery('''
+      SELECT 
+        DATE(created_at / 1000, 'unixepoch') as date,
+        SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
+        SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
+      FROM bill_items
+      WHERE ${whereConditions.join(' AND ')}
+      GROUP BY DATE(created_at / 1000, 'unixepoch')
+      ORDER BY date ASC
+    ''', whereArgs);
+
+    return results.map<TrendDataPoint>((map) {
+      return TrendDataPoint(
+        date: DateTime.parse(map['date'] as String),
+        income: (map['income'] as num?)?.toDouble() ?? 0.0,
+        expense: (map['expense'] as num?)?.toDouble() ?? 0.0,
+      );
+    }).toList();
+  }
+
+  /// 获取账单交易类型分布
+  Future<Map<String, double>> getBillTypeDistribution(String userId,
+      {DateTime? startDate, DateTime? endDate, String? type}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?'];
+    List<Object?> whereArgs = [userId];
+
+    if (type != null) {
+      whereConditions.add('type = ?');
+      whereArgs.add(type);
+    }
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    final results = await db.rawQuery('''
+      SELECT 
+        transaction_type,
+        SUM(amount) as total
+      FROM bill_items
+      WHERE ${whereConditions.join(' AND ')}
+      GROUP BY transaction_type
+    ''', whereArgs);
+
+    final Map<String, double> distribution = {};
+    for (final row in results) {
+      final typeName = row['transaction_type'] as String?;
+      final total = (row['total'] as num?)?.toDouble() ?? 0.0;
+      if (typeName != null) {
+        distribution[typeName] = total;
+      }
+    }
+
+    return distribution;
+  }
+
+  /// 获取收入Top10的账单明细
+  Future<List<BillItem>> getTopIncomeBillItems(String userId,
+      {DateTime? startDate, DateTime? endDate, int limit = 10}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?', 'type = ?'];
+    List<Object?> whereArgs = [userId, 'income'];
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    final results = await db.query(
+      'bill_items',
+      where: whereConditions.join(' AND '),
+      whereArgs: whereArgs,
+      orderBy: 'amount DESC',
+      limit: limit,
+    );
+
+    return results.map<BillItem>((map) => BillItem.fromMap(map)).toList();
+  }
+
+  /// 获取支出Top10的账单明细
+  Future<List<BillItem>> getTopExpenseBillItems(String userId,
+      {DateTime? startDate, DateTime? endDate, int limit = 10}) async {
+    final db = await database;
+
+    List<String> whereConditions = ['user_id = ?', 'type = ?'];
+    List<Object?> whereArgs = [userId, 'expense'];
+
+    if (startDate != null) {
+      whereConditions.add('created_at >= ?');
+      whereArgs.add(startDate.millisecondsSinceEpoch);
+    }
+    if (endDate != null) {
+      whereConditions.add('created_at <= ?');
+      whereArgs.add(endDate.millisecondsSinceEpoch);
+    }
+
+    final results = await db.query(
+      'bill_items',
+      where: whereConditions.join(' AND '),
+      whereArgs: whereArgs,
+      orderBy: 'amount DESC',
+      limit: limit,
+    );
+
+    return results.map<BillItem>((map) => BillItem.fromMap(map)).toList();
+  }
+
+  /// 直接更新用户积分到buyer_extensions表（使用 UserDatabaseService）
+  Future<void> updatePointsDirectly(String userId, int points) async {
+    try {
+      _log('尝试使用 UserDatabaseService 更新用户 $userId 的积分为: $points');
+      
+      final userDbService = UserDatabaseService();
+      
+      // 使用 updateUser 方法更新积分
+      await userDbService.updateUser(userId, {}, {'points': points});
+      
+      _log('使用 UserDatabaseService 更新积分成功');
+      
+      // 验证更新是否成功
+      final verifyPoints = await getUserPoints(userId);
+      _log('验证积分更新成功，数据库中的积分: $verifyPoints');
+      
+    } catch (e) {
+      _log('直接更新积分失败: $e');
+    }
+  }
+
+  /// 重新计算并修复用户积分
+  Future<void> recalculateAndFixPoints(String userId) async {
+    try {
+      final db = await database;
+      
+      _log('开始重新计算用户 $userId 的积分');
+      
+      // 先获取所有bill_items记录，直接计算
+      final allBillItems = await db.query(
+        'bill_items',
+        where: 'user_id = ?',
+        whereArgs: [userId],
+      );
+      
+      _log('找到 ${allBillItems.length} 条积分记录');
+      
+      int totalIncome = 0;
+      int totalExpense = 0;
+      
+      for (final item in allBillItems) {
+        final type = item['type'] as String?;
+        final amount = item['amount'] as num?;
+        final description = item['description'] as String?;
+        
+        _log('  记录: type=$type, amount=$amount, description=$description');
+        
+        if (type == 'income' && amount != null) {
+          totalIncome += amount.toInt();
+        } else if (type == 'expense' && amount != null) {
+          totalExpense += amount.toInt();
+        }
+      }
+      
+      final correctBalance = totalIncome - totalExpense;
+      
+      _log('用户 $userId 积分明细 - 总收入: $totalIncome, 总支出: $totalExpense, 正确余额: $correctBalance');
+      
+      // 直接更新积分，不通过UserDatabaseService
+      await updatePointsDirectly(userId, correctBalance);
+      
+      _log('用户 $userId 积分已修复，正确余额: $correctBalance');
+    } catch (e) {
+      _log('修复用户积分失败: $e');
+    }
+  }
+
+  /// 修复历史交易记录的transactionType
+  /// 将错误标记为habit_completed的记录修正为正确的类型
+  Future<void> fixHistoricalTransactionTypes(String userId) async {
+    try {
+      final db = await database;
+      
+      // 查询所有transaction_type为habit_completed的记录
+      final results = await db.query(
+        'bill_items',
+        where: 'user_id = ? AND transaction_type = ?',
+        whereArgs: [userId, 'habit_completed'],
+      );
+      
+      int fixedCount = 0;
+      
+      for (final record in results) {
+        final description = record['description'] as String? ?? '';
+        String newTransactionType = 'habit_completed';
+        
+        // 根据description判断正确的类型
+        if (description.contains('完成待办事项') || description.contains('取消完成待办事项')) {
+          newTransactionType = 'todo_completed';
+        } else if (description.contains('完成日记')) {
+          newTransactionType = 'diary_completed';
+        }
+        
+        // 如果需要修改，更新记录
+        if (newTransactionType != 'habit_completed') {
+          await db.update(
+            'bill_items',
+            {'transaction_type': newTransactionType},
+            where: 'id = ?',
+            whereArgs: [record['id']],
+          );
+          fixedCount++;
+        }
+      }
+      
+      _log('用户 $userId 历史交易记录修复完成，共修复 $fixedCount 条记录');
+    } catch (e) {
+      _log('修复历史交易记录失败: $e');
+    }
+  }
+
+  Future<List<KanbanColumnEntity>> getKanbanColumns() async {
+    final db = await database;
+    final userId = await getCurrentUserId() ?? 'default_user';
+    final maps = await db.query('kanban_columns', where: 'user_id = ?', whereArgs: [userId], orderBy: 'position ASC');
+    print('[DB] getKanbanColumns: userId=$userId, count=${maps.length}');
+    if (maps.isEmpty) {
+      await _ensureDefaultKanbanColumns(db, userId);
+      final retryMaps = await db.query('kanban_columns', where: 'user_id = ?', whereArgs: [userId], orderBy: 'position ASC');
+      return retryMaps.map<KanbanColumnEntity>((map) => KanbanColumnEntity.fromJson(map as Map<String, dynamic>)).toList();
+    }
+    final seenTitles = <String>{};
+    final toDelete = <String>[];
+    for (final map in maps) {
+      final title = map['title'] as String;
+      if (seenTitles.contains(title)) {
+        toDelete.add(map['id'] as String);
+      } else {
+        seenTitles.add(title);
+      }
+    }
+    for (final id in toDelete) {
+      await db.delete('kanban_columns', where: 'id = ?', whereArgs: [id]);
+      print('[DB] getKanbanColumns: 删除重复列 $id');
+    }
+    if (toDelete.isNotEmpty) {
+      final cleanMaps = await db.query('kanban_columns', where: 'user_id = ?', whereArgs: [userId], orderBy: 'position ASC');
+      return cleanMaps.map<KanbanColumnEntity>((map) => KanbanColumnEntity.fromJson(map as Map<String, dynamic>)).toList();
+    }
+    return maps.map<KanbanColumnEntity>((map) => KanbanColumnEntity.fromJson(map as Map<String, dynamic>)).toList();
+  }
+
+  Future<void> _ensureDefaultKanbanColumns(dynamic db, String userId) async {
+    final existing = await db.query('kanban_columns', where: 'user_id = ?', whereArgs: [userId]);
+    if (existing.isEmpty) {
+      await db.insert('kanban_columns', {'id': 'todo', 'title': '待办', 'color': '#6750A4', 'position': 0, 'user_id': userId});
+      await db.insert('kanban_columns', {'id': 'in_progress', 'title': '进行中', 'color': '#FFB74D', 'position': 1, 'user_id': userId});
+      await db.insert('kanban_columns', {'id': 'done', 'title': '已完成', 'color': '#66BB6A', 'position': 2, 'user_id': userId});
+    }
+  }
+
+  Future<void> insertKanbanColumn(KanbanColumnEntity column) async {
+    final db = await database;
+    await db.insert('kanban_columns', column.toJson(), conflictAlgorithm: sqflite_package.ConflictAlgorithm.replace);
+  }
+
+  Future<void> updateKanbanColumn(KanbanColumnEntity column) async {
+    final db = await database;
+    await db.update('kanban_columns', column.toJson(), where: 'id = ?', whereArgs: [column.id]);
+  }
+
+  Future<void> deleteKanbanColumn(String columnId) async {
+    final db = await database;
+    await db.delete('kanban_columns', where: 'id = ?', whereArgs: [columnId]);
+  }
+}

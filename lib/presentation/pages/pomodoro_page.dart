@@ -1,0 +1,3925 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:intl/intl.dart';
+import 'package:moment_keep/presentation/blocs/pomodoro_bloc.dart';
+import 'package:moment_keep/services/database_service.dart';
+
+import 'package:moment_keep/core/theme/theme_provider.dart';
+
+/// 番茄钟页面
+class PomodoroPage extends StatelessWidget {
+  /// 构造函数
+  const PomodoroPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocProvider(
+      create: (context) => PomodoroBloc(),
+      child: const PomodoroView(),
+    );
+  }
+}
+
+/// 番茄钟视图
+class PomodoroView extends ConsumerStatefulWidget {
+  /// 构造函数
+  const PomodoroView({super.key});
+
+  @override
+  ConsumerState<PomodoroView> createState() => _PomodoroViewState();
+}
+
+class _PomodoroViewState extends ConsumerState<PomodoroView> {
+  bool _showMiddleCircle = true;
+  bool _showInnerCircle = true;
+  bool _isVibrationEnabled = true; // 震动反馈状态
+  bool _isAudioEnabled = true; // 音频反馈状态
+  bool _isRandomAudioEnabled = true; // 随机音频状态，默认启用
+  bool _isAudioSelectionEnabled = false; // 音频选择状态
+  String _selectedAudio = 'default'; // 选中的音频
+  bool _isStatsExpanded = true;
+  bool _isFocusMode = true; // 波动开关：true=专注模式，false=休息模式
+  int _focusDuration = 25; // 默认25分钟专注
+  int _restDuration = 5; // 默认5分钟休息
+  int _focusSeconds = 0; // 默认0秒专注
+  int _restSeconds = 0; // 默认0秒休息
+  bool _isInterruptionDialogVisible = false; // 控制中断记录弹窗显示
+  bool _isFullScreen = false; // 控制是否全屏显示
+  final TextEditingController _interruptionController =
+      TextEditingController(); // 中断原因输入控制器
+  
+  // 时间编辑相关状态
+  bool _isEditingMinutes = false; // 是否正在编辑分钟
+  bool _isEditingSeconds = false; // 是否正在编辑秒
+  final TextEditingController _minutesController = TextEditingController(); // 分钟输入控制器
+  final TextEditingController _secondsController = TextEditingController(); // 秒输入控制器
+  final FocusNode _minutesFocusNode = FocusNode();
+  final FocusNode _secondsFocusNode = FocusNode();
+
+  // 统计数据状态
+  Map<String, dynamic> _todayFocusStats = {
+    'count': 0,
+    'duration': 0,
+    'averageDuration': 0,
+    'interruptions': 0,
+  };
+  Map<String, dynamic> _todayRestStats = {
+    'count': 0,
+    'duration': 0,
+    'averageDuration': 0,
+    'interruptions': 0,
+  };
+  Map<String, dynamic> _yesterdayFocusStats = {
+    'count': 0,
+    'duration': 0,
+    'averageDuration': 0,
+    'interruptions': 0,
+  };
+  Map<String, dynamic> _yesterdayRestStats = {
+    'count': 0,
+    'duration': 0,
+    'averageDuration': 0,
+    'interruptions': 0,
+  };
+
+  // 历史趋势数据
+  List<Map<String, dynamic>> _historyTrendData = [];
+  Map<int, int> _hourlyDistribution = {};
+  Map<String, int> _completionVsInterruption = {};
+  bool _isLoadingHistory = false;
+  bool _hasLoadedHistory = false;
+  bool _hasCompletedRefresh = false;
+
+  // 时间范围选择
+  String _selectedTimeRange = 'week'; // 'week', 'month', 'year', 'custom'
+  DateTime? _customStartDate;
+  DateTime? _customEndDate;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedSettings();
+    _loadPomodoroStats();
+  }
+
+  /// 加载保存的设置
+  Future<void> _loadSavedSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      setState(() {
+        _showMiddleCircle = prefs.getBool('showMiddleCircle') ?? true;
+        _showInnerCircle = prefs.getBool('showInnerCircle') ?? true;
+        _isVibrationEnabled = prefs.getBool('isVibrationEnabled') ?? true;
+        _isAudioEnabled = prefs.getBool('isAudioEnabled') ?? true;
+        _isRandomAudioEnabled = prefs.getBool('isRandomAudioEnabled') ?? true;
+        _isAudioSelectionEnabled = prefs.getBool('isAudioSelectionEnabled') ?? false;
+        _selectedAudio = prefs.getString('selectedAudio') ?? 'default';
+      });
+      
+      print('Settings loaded successfully');
+    } catch (e) {
+      print('Error loading settings: $e');
+    }
+  }
+
+  /// 保存设置
+  Future<void> _saveSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      await prefs.setBool('showMiddleCircle', _showMiddleCircle);
+      await prefs.setBool('showInnerCircle', _showInnerCircle);
+      await prefs.setBool('isVibrationEnabled', _isVibrationEnabled);
+      await prefs.setBool('isAudioEnabled', _isAudioEnabled);
+      await prefs.setBool('isRandomAudioEnabled', _isRandomAudioEnabled);
+      await prefs.setBool('isAudioSelectionEnabled', _isAudioSelectionEnabled);
+      await prefs.setString('selectedAudio', _selectedAudio);
+      
+      print('Settings saved successfully');
+    } catch (e) {
+      print('Error saving settings: $e');
+    }
+  }
+
+  /// 加载番茄钟统计数据
+  Future<void> _loadPomodoroStats() async {
+    try {
+      final dbService = DatabaseService();
+      final db = await dbService.database;
+
+      // 获取今天和昨天的日期范围
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final yesterday = today.subtract(const Duration(days: 1));
+      final tomorrow = today.add(const Duration(days: 1));
+
+      // 今天的开始和结束时间戳
+      final todayStart = today.millisecondsSinceEpoch;
+      final todayEnd = tomorrow.millisecondsSinceEpoch - 1;
+
+      // 昨天的开始和结束时间戳
+      final yesterdayStart = yesterday.millisecondsSinceEpoch;
+      final yesterdayEnd = todayStart - 1;
+
+      // 调试：检查表中总记录数
+      final totalRecords = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM pomodoro_records',
+      );
+      print('[PomodoroStats] Total records: ${totalRecords[0]['count']}');
+
+      // 调试：检查今天的记录
+      final todayRecords = await db.rawQuery(
+        'SELECT * FROM pomodoro_records WHERE start_time >= ? AND start_time <= ?',
+        [todayStart, todayEnd],
+      );
+      print('[PomodoroStats] Today records: ${todayRecords.length}');
+      for (final r in todayRecords) {
+        print('[PomodoroStats]   state=${r['state']}, is_completed=${r['is_completed']}, '
+            'duration=${r['duration_minutes']}, notes=${r['notes']}');
+      }
+
+      // 查询今天的专注时钟数据
+      final todayFocusResult = await db.rawQuery('''
+        SELECT 
+          COUNT(*) as count,
+          SUM(duration_minutes) as duration,
+          AVG(duration_minutes) as averageDuration,
+          SUM(CASE WHEN notes = '暂停' THEN 1 ELSE 0 END) as interruptions
+        FROM pomodoro_records
+        WHERE start_time >= ? AND start_time <= ?
+          AND state = 'focusing'
+          AND is_completed = 1
+      ''', [todayStart, todayEnd]);
+
+      print('[PomodoroStats] Today focus result: $todayFocusResult');
+
+      if (todayFocusResult.isNotEmpty) {
+        _todayFocusStats = {
+          'count': todayFocusResult[0]['count'] ?? 0,
+          'duration': todayFocusResult[0]['duration'] ?? 0,
+          'averageDuration': todayFocusResult[0]['averageDuration'] ?? 0,
+          'interruptions': todayFocusResult[0]['interruptions'] ?? 0,
+        };
+      }
+
+      // 查询今天的休息时钟数据
+      final todayRestResult = await db.rawQuery('''
+        SELECT 
+          COUNT(*) as count,
+          SUM(duration_minutes) as duration,
+          AVG(duration_minutes) as averageDuration,
+          SUM(CASE WHEN notes = '暂停' THEN 1 ELSE 0 END) as interruptions
+        FROM pomodoro_records
+        WHERE start_time >= ? AND start_time <= ?
+          AND state = 'resting'
+          AND is_completed = 1
+      ''', [todayStart, todayEnd]);
+
+      if (todayRestResult.isNotEmpty) {
+        _todayRestStats = {
+          'count': todayRestResult[0]['count'] ?? 0,
+          'duration': todayRestResult[0]['duration'] ?? 0,
+          'averageDuration': todayRestResult[0]['averageDuration'] ?? 0,
+          'interruptions': todayRestResult[0]['interruptions'] ?? 0,
+        };
+      }
+
+      // 查询昨天的专注时钟数据
+      final yesterdayFocusResult = await db.rawQuery('''
+        SELECT 
+          COUNT(*) as count,
+          SUM(duration_minutes) as duration,
+          AVG(duration_minutes) as averageDuration,
+          SUM(CASE WHEN notes = '暂停' THEN 1 ELSE 0 END) as interruptions
+        FROM pomodoro_records
+        WHERE start_time >= ? AND start_time <= ?
+          AND state = 'focusing'
+          AND is_completed = 1
+      ''', [yesterdayStart, yesterdayEnd]);
+
+      if (yesterdayFocusResult.isNotEmpty) {
+        _yesterdayFocusStats = {
+          'count': yesterdayFocusResult[0]['count'] ?? 0,
+          'duration': yesterdayFocusResult[0]['duration'] ?? 0,
+          'averageDuration': yesterdayFocusResult[0]['averageDuration'] ?? 0,
+          'interruptions': yesterdayFocusResult[0]['interruptions'] ?? 0,
+        };
+      }
+
+      // 查询昨天的休息时钟数据
+      final yesterdayRestResult = await db.rawQuery('''
+        SELECT 
+          COUNT(*) as count,
+          SUM(duration_minutes) as duration,
+          AVG(duration_minutes) as averageDuration,
+          SUM(CASE WHEN notes = '暂停' THEN 1 ELSE 0 END) as interruptions
+        FROM pomodoro_records
+        WHERE start_time >= ? AND start_time <= ?
+          AND state = 'resting'
+          AND is_completed = 1
+      ''', [yesterdayStart, yesterdayEnd]);
+
+      if (yesterdayRestResult.isNotEmpty) {
+        _yesterdayRestStats = {
+          'count': yesterdayRestResult[0]['count'] ?? 0,
+          'duration': yesterdayRestResult[0]['duration'] ?? 0,
+          'averageDuration': yesterdayRestResult[0]['averageDuration'] ?? 0,
+          'interruptions': yesterdayRestResult[0]['interruptions'] ?? 0,
+        };
+      }
+
+      print('[PomodoroStats] Loaded stats - todayFocus: $_todayFocusStats, todayRest: $_todayRestStats');
+
+      setState(() {});
+    } catch (e) {
+      print('Error loading pomodoro stats: $e');
+      if (mounted) {
+        setState(() {});
+      }
+    }
+  }
+
+  /// 加载历史趋势数据
+  Future<void> _loadHistoryTrendData() async {
+    if (_isLoadingHistory) return;
+
+    setState(() {
+      _isLoadingHistory = true;
+    });
+
+    try {
+      final dbService = DatabaseService();
+      final db = await dbService.database;
+
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      
+      DateTime startDate;
+      DateTime endTimeDate;
+
+      switch (_selectedTimeRange) {
+        case 'week':
+          startDate = today.subtract(const Duration(days: 6));
+          endTimeDate = today;
+          break;
+        case 'month':
+          startDate = today.subtract(const Duration(days: 29));
+          endTimeDate = today;
+          break;
+        case 'year':
+          startDate = today.subtract(const Duration(days: 364));
+          endTimeDate = today;
+          break;
+        case 'custom':
+          startDate = _customStartDate ?? today.subtract(const Duration(days: 6));
+          endTimeDate = _customEndDate ?? today;
+          break;
+        default:
+          startDate = today.subtract(const Duration(days: 6));
+          endTimeDate = today;
+      }
+
+      final startTime = startDate.millisecondsSinceEpoch;
+      final endTime = endTimeDate.add(const Duration(days: 1)).millisecondsSinceEpoch - 1;
+
+      final recordsResult = await db.rawQuery('''
+        SELECT 
+          start_time,
+          duration_minutes,
+          state,
+          is_completed,
+          notes
+        FROM pomodoro_records
+        WHERE start_time >= ? AND start_time <= ?
+          AND is_completed = 1
+        ORDER BY start_time ASC
+      ''', [startTime, endTime]);
+
+      final days = endTimeDate.difference(startDate).inDays + 1;
+      print('[PomodoroHistory] Time range: $_selectedTimeRange, days=$days, found ${recordsResult.length} records');
+
+      final dailyData = <String, Map<String, dynamic>>{};
+      final hourlyDist = <int, int>{};
+      int completedCount = 0;
+      int interruptedCount = 0;
+
+      for (final record in recordsResult) {
+        try {
+          final startTimeValue = record['start_time'];
+          if (startTimeValue == null) continue;
+          final startTimeMs = startTimeValue is int
+              ? startTimeValue
+              : int.tryParse(startTimeValue.toString()) ?? 0;
+          if (startTimeMs == 0) continue;
+          final recordDate = DateTime.fromMillisecondsSinceEpoch(startTimeMs);
+          final dateStr = DateFormat('yyyy-MM-dd').format(recordDate);
+          final durationMinutes = (record['duration_minutes'] as num?)?.toInt() ?? 0;
+          final state = record['state']?.toString() ?? '';
+          final notes = record['notes']?.toString() ?? '';
+          final isInterrupted = notes == '暂停';
+
+          if (!dailyData.containsKey(dateStr)) {
+            dailyData[dateStr] = {
+              'date': dateStr,
+              'focusCount': 0,
+              'restCount': 0,
+              'focusDuration': 0,
+              'restDuration': 0,
+              'interruptions': 0,
+            };
+          }
+
+          if (state == 'focusing') {
+            dailyData[dateStr]!['focusCount'] = (dailyData[dateStr]!['focusCount'] as int) + 1;
+            dailyData[dateStr]!['focusDuration'] = (dailyData[dateStr]!['focusDuration'] as int) + durationMinutes;
+            if (isInterrupted) {
+              dailyData[dateStr]!['interruptions'] = (dailyData[dateStr]!['interruptions'] as int) + 1;
+              interruptedCount++;
+            } else {
+              completedCount++;
+            }
+          } else if (state == 'resting') {
+            dailyData[dateStr]!['restCount'] = (dailyData[dateStr]!['restCount'] as int) + 1;
+            dailyData[dateStr]!['restDuration'] = (dailyData[dateStr]!['restDuration'] as int) + durationMinutes;
+          }
+
+          final hour = recordDate.hour;
+          hourlyDist[hour] = (hourlyDist[hour] ?? 0) + 1;
+        } catch (e) {
+          print('Error processing pomodoro record: $e');
+          continue;
+        }
+      }
+
+      final trendData = <Map<String, dynamic>>[];
+      for (int i = 0; i < days; i++) {
+        final date = startDate.add(Duration(days: i));
+        final dateStr = DateFormat('yyyy-MM-dd').format(date);
+        
+        if (!dailyData.containsKey(dateStr)) {
+          dailyData[dateStr] = {
+            'date': dateStr,
+            'focusCount': 0,
+            'restCount': 0,
+            'focusDuration': 0,
+            'restDuration': 0,
+            'interruptions': 0,
+          };
+        }
+        
+        trendData.add(dailyData[dateStr]!);
+      }
+
+      if (mounted) {
+        print('[PomodoroHistory] Trend data: ${trendData.length} days, hourlyDist: $_hourlyDistribution, '
+            'completed: $completedCount, interrupted: $interruptedCount');
+        setState(() {
+          _historyTrendData = trendData;
+          _hourlyDistribution = hourlyDist;
+          _completionVsInterruption = {
+            'completed': completedCount,
+            'interrupted': interruptedCount,
+          };
+          _isLoadingHistory = false;
+          _hasLoadedHistory = true;
+        });
+      }
+    } catch (e) {
+      print('Error loading history trend data: $e');
+      if (mounted) {
+        print('[PomodoroHistory] Error occurred, resetting history data');
+        setState(() {
+          _isLoadingHistory = false;
+          _hasLoadedHistory = true;
+          _historyTrendData = [];
+        });
+      }
+    }
+  }
+
+  /// 格式化时长为时分格式
+  String _formatDuration(int seconds) {
+    final hours = seconds ~/ 3600;
+    final minutes = (seconds % 3600) ~/ 60;
+    
+    if (hours > 0) {
+      return '$hours h ${minutes}m';
+    } else {
+      return '$minutes m';
+    }
+  }
+
+  /// 格式化平均时长
+  String _formatAverageDuration(num seconds) {
+    final minutes = (seconds / 60).round();
+    return '$minutes m';
+  }
+
+  /// 显示音频选择对话框
+  void _showAudioSelectionDialog(BuildContext context) {
+    // 可用的音频列表（包含所有在pubspec.yaml中列出的音频文件）
+    final audioOptions = [
+      {'value': 'default', 'label': '默认音频'},
+      {'value': 'bell', 'label': '铃声'},
+      {'value': 'chime', 'label': '风铃'},
+      {'value': 'notification', 'label': '通知音'},
+      {'value': 'alarm', 'label': '闹钟'},
+      {'value': 'BELLLrg_Church bell', 'label': '教堂钟声'},
+      {'value': 'Ba', 'label': 'Ba音效'},
+      {'value': 'BellNotification', 'label': '通知铃声'},
+      {'value': 'BellRing', 'label': '铃响'},
+      {'value': 'Deng', 'label': '登声'},
+      {'value': 'Ding', 'label': '叮声'},
+      {'value': 'DingEnd', 'label': '结束叮声'},
+      {'value': 'KeTingEnd', 'label': '课堂结束'},
+      {'value': 'Livechat', 'label': '聊天提示'},
+      {'value': 'Notification', 'label': '通知'},
+      {'value': 'Notification2', 'label': '通知2'},
+      {'value': 'Notification3', 'label': '通知3'},
+      {'value': 'Piano', 'label': '钢琴'},
+      {'value': 'Rock', 'label': '摇滚'},
+      {'value': 'cute_notification_sounds', 'label': '可爱通知音'},
+      {'value': 'silence', 'label': '静音'},
+    ];
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        // 使用局部变量来跟踪当前选择
+        String selectedAudio = _selectedAudio;
+        
+        return AlertDialog(
+          title: const Text('选择音频'),
+          content: StatefulBuilder(
+            builder: (context, setState) {
+              return SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: audioOptions.map((audio) {
+                    return RadioListTile<String>(
+                      title: Text(audio['label']!),
+                      value: audio['value']!,
+                      groupValue: selectedAudio,
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() {
+                            selectedAudio = value;
+                          });
+                        }
+                      },
+                    );
+                  }).toList(),
+                ),
+              );
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () {
+                // 点击确定时更新全局状态
+                setState(() {
+                  _selectedAudio = selectedAudio;
+                });
+                Navigator.of(context).pop();
+                _saveSettings();
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _interruptionController.dispose();
+    _minutesController.dispose();
+    _secondsController.dispose();
+    _minutesFocusNode.dispose();
+    _secondsFocusNode.dispose();
+    super.dispose();
+  }
+
+  /// 显示时间设置对话框
+  void _showDurationSettingsDialog(BuildContext context) {
+    int tempFocusDuration = _focusDuration;
+    int tempRestDuration = _restDuration;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('⏱️ 设置时长'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 专注时长
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('专注时长（分钟）:'),
+                      DropdownButton<int>(
+                        value: tempFocusDuration,
+                        items: List.generate(61, (index) {
+                          return DropdownMenuItem<int>(
+                            value: index,
+                            child: Text('$index'),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() {
+                              tempFocusDuration = value;
+                            });
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  // 休息时长
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('休息时长（分钟）:'),
+                      DropdownButton<int>(
+                        value: tempRestDuration,
+                        items: List.generate(31, (index) {
+                          return DropdownMenuItem<int>(
+                            value: index,
+                            child: Text('$index'),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setDialogState(() {
+                              tempRestDuration = value;
+                            });
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('取消'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    setState(() {
+                      _focusDuration = tempFocusDuration;
+                      _restDuration = tempRestDuration;
+                    });
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('已设置：专注 $tempFocusDuration 分钟，休息 $tempRestDuration 分钟'),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                  child: const Text('确定'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// 显示时间选择对话框
+  // ignore: unused_element
+  void _showTimePicker(BuildContext context, {bool selectMinutes = false, bool selectSeconds = false}) {
+    // 确定当前模式（专注或休息）
+    final isFocusMode = _isFocusMode;
+
+    // 获取当前设置的时间
+    int currentMinutes = isFocusMode ? _focusDuration : _restDuration;
+    int currentSeconds = 0; // 默认秒为0
+
+    // 如果是选择分钟或秒，显示相应的选择器
+    if (selectMinutes || selectSeconds) {
+      // 这里可以实现更复杂的时间选择逻辑
+      // 为了简单起见，我们使用 showDialog 来显示一个简单的时间选择界面
+      showDialog(
+        context: context,
+        builder: (context) {
+          int selectedValue = selectMinutes ? currentMinutes : currentSeconds;
+          int maxValue = selectMinutes ? 60 : 59;
+          String title = selectMinutes ? '设置分钟' : '设置秒';
+
+          return AlertDialog(
+            title: Text(title),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 使用滑块选择时间
+                Slider(
+                  value: selectedValue.toDouble(),
+                  min: 0,
+                  max: maxValue.toDouble(),
+                  divisions: maxValue,
+                  label: '$selectedValue',
+                  onChanged: (value) {
+                    selectedValue = value.toInt();
+                  },
+                ),
+                // 显示当前选择的值
+                Text(
+                  selectMinutes ? '$selectedValue 分钟' : '$selectedValue 秒',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    if (selectMinutes) {
+                      if (isFocusMode) {
+                        _focusDuration = selectedValue;
+                      } else {
+                        _restDuration = selectedValue;
+                      }
+                    } else {
+                      // 秒的设置可以根据需要实现
+                    }
+                  });
+                  Navigator.of(context).pop();
+                },
+                child: const Text('确定'),
+              ),
+            ],
+          );
+        },
+      );
+    } else {
+      // 显示完整的时间选择器
+      showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: Text(isFocusMode ? '设置专注时长' : '设置休息时长'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 分钟设置
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('分钟:'),
+                    DropdownButton<int>(
+                      value: currentMinutes,
+                      items: List.generate(61, (index) {
+                        return DropdownMenuItem<int>(
+                          value: index,
+                          child: Text('$index'),
+                        );
+                      }),
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() {
+                            currentMinutes = value;
+                          });
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                // 秒设置
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('秒:'),
+                    DropdownButton<int>(
+                      value: currentSeconds,
+                      items: List.generate(60, (index) {
+                        return DropdownMenuItem<int>(
+                          value: index,
+                          child: Text('$index'),
+                        );
+                      }),
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() {
+                            currentSeconds = value;
+                          });
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    if (isFocusMode) {
+                      _focusDuration = currentMinutes;
+                    } else {
+                      _restDuration = currentMinutes;
+                    }
+                  });
+                  Navigator.of(context).pop();
+                },
+                child: const Text('确定'),
+              ),
+            ],
+          );
+        },
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = ref.watch(currentThemeProvider);
+
+    return Scaffold(
+      // 使用透明AppBar，实现沉浸式设计
+      // 全屏模式下隐藏AppBar
+      appBar: _isFullScreen
+          ? null
+          : AppBar(
+              title: const Text('番茄钟'),
+              centerTitle: true,
+              backgroundColor: theme.appBarTheme.backgroundColor,
+              foregroundColor: theme.appBarTheme.foregroundColor,
+              elevation: theme.appBarTheme.elevation,
+              actions: [
+                // ⏰ 时间设置按钮
+                IconButton(
+                  icon: const Icon(Icons.timer_outlined),
+                  tooltip: '设置专注/休息时长',
+                  onPressed: () => _showDurationSettingsDialog(context),
+                ),
+                // 设置菜单
+                PopupMenuButton<String>(
+                  onSelected: (value) {
+                    setState(() {
+                      switch (value) {
+                        case 'showMiddleCircle':
+                          _showMiddleCircle = !_showMiddleCircle;
+                          break;
+                        case 'showInnerCircle':
+                          _showInnerCircle = !_showInnerCircle;
+                          break;
+                        case 'toggleVibration':
+                          _isVibrationEnabled = !_isVibrationEnabled;
+                          context.read<PomodoroBloc>().add(ToggleVibration());
+                          break;
+                        case 'toggleAudio':
+                          _isAudioEnabled = !_isAudioEnabled;
+                          context.read<PomodoroBloc>().add(ToggleAudio());
+                          
+                          // 如果音频反馈被启用，确保至少有一个音频模式被选中
+                          if (_isAudioEnabled && !_isRandomAudioEnabled && !_isAudioSelectionEnabled) {
+                            _isRandomAudioEnabled = true;
+                          }
+                          break;
+                        case 'toggleRandomAudio':
+                          _isRandomAudioEnabled = !_isRandomAudioEnabled;
+                          if (_isRandomAudioEnabled) {
+                            _isAudioSelectionEnabled = false;
+                          }
+                          break;
+                        case 'toggleAudioSelection':
+                          _isAudioSelectionEnabled = !_isAudioSelectionEnabled;
+                          if (_isAudioSelectionEnabled) {
+                            _isRandomAudioEnabled = false;
+                          }
+                          // 打开音频选择对话框
+                          _showAudioSelectionDialog(context);
+                          break;
+                      }
+                    });
+                    
+                    // 保存设置
+                    _saveSettings();
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'showMiddleCircle',
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: _showMiddleCircle,
+                            onChanged: (value) {
+                              setState(() {
+                                _showMiddleCircle = value ?? true;
+                              });
+                              Navigator.pop(context);
+                              _saveSettings();
+                            },
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          const Text('显示中间圈'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'showInnerCircle',
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: _showInnerCircle,
+                            onChanged: (value) {
+                              setState(() {
+                                _showInnerCircle = value ?? true;
+                              });
+                              Navigator.pop(context);
+                              _saveSettings();
+                            },
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          const Text('显示内圈'),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'toggleVibration',
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: _isVibrationEnabled,
+                            onChanged: (value) {
+                              setState(() {
+                                _isVibrationEnabled = value ?? true;
+                                context
+                                    .read<PomodoroBloc>()
+                                    .add(ToggleVibration());
+                              });
+                              Navigator.pop(context);
+                              _saveSettings();
+                            },
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          const Text('震动反馈'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'toggleAudio',
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: _isAudioEnabled,
+                            onChanged: (value) {
+                              setState(() {
+                                _isAudioEnabled = value ?? true;
+                                context.read<PomodoroBloc>().add(ToggleAudio());
+                                
+                                // 如果音频反馈被启用，确保至少有一个音频模式被选中
+                                if (_isAudioEnabled && !_isRandomAudioEnabled && !_isAudioSelectionEnabled) {
+                                  _isRandomAudioEnabled = true;
+                                }
+                              });
+                              Navigator.pop(context);
+                              _saveSettings();
+                            },
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          const Text('音频反馈'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'toggleRandomAudio',
+                      child: Row(
+                        children: [
+                          SizedBox(width: 24), // 添加缩进
+                          Radio<bool>(
+                            value: true,
+                            groupValue: _isRandomAudioEnabled,
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() {
+                                  _isRandomAudioEnabled = true;
+                                  _isAudioSelectionEnabled = false;
+                                });
+                                Navigator.pop(context);
+                                _saveSettings();
+                              }
+                            },
+                          ),
+                          const Text('随机音频'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem(
+                      value: 'toggleAudioSelection',
+                      child: Row(
+                        children: [
+                          SizedBox(width: 24), // 添加缩进
+                          Radio<bool>(
+                            value: true,
+                            groupValue: _isAudioSelectionEnabled,
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() {
+                                  _isAudioSelectionEnabled = true;
+                                  _isRandomAudioEnabled = false;
+                                });
+                                Navigator.pop(context);
+                                _showAudioSelectionDialog(context);
+                                _saveSettings();
+                              }
+                            },
+                          ),
+                          const Text('音频选择'),
+                        ],
+                      ),
+                    ),
+                  ],
+                  icon: const Icon(Icons.more_vert),
+                ),
+              ],
+            ),
+      backgroundColor: theme.scaffoldBackgroundColor,
+      body: Stack(
+        children: [
+          // 原有内容
+          BlocListener<PomodoroBloc, PomodoroBlocState>(
+            listener: (context, state) {
+              if (state is PomodoroCompleted && !_hasCompletedRefresh) {
+                _hasCompletedRefresh = true;
+                Future.delayed(const Duration(milliseconds: 500), () {
+                  if (mounted) {
+                    _loadPomodoroStats();
+                    _hasLoadedHistory = false;
+                    _loadHistoryTrendData();
+                  }
+                });
+              }
+              if (state is PomodoroInitial) {
+                _hasCompletedRefresh = false;
+              }
+            },
+            child: BlocBuilder<PomodoroBloc, PomodoroBlocState>(
+            builder: (context, state) {
+              // 获取当前状态信息
+              String statusText = '准备开始';
+              Color statusColor = theme.colorScheme.primary;
+              int remainingTime =
+                  _isFocusMode ? _focusDuration * 60 + _focusSeconds : _restDuration * 60 + _restSeconds;
+              int totalTime =
+                  _isFocusMode ? _focusDuration * 60 + _focusSeconds : _restDuration * 60 + _restSeconds;
+
+              bool isRunning = false;
+
+              if (state is PomodoroRunning) {
+                isRunning = true;
+                if (state.session.state == PomodoroState.focusing) {
+                  statusText = '专注中';
+                  statusColor = theme.colorScheme.primary;
+                } else {
+                  statusText = '休息中';
+                  statusColor = theme.colorScheme.secondary;
+                }
+                remainingTime = state.session.remainingTime;
+                totalTime = state.session.totalTime;
+              } else if (state is PomodoroPaused) {
+                isRunning = true;
+                statusText = '已暂停';
+                statusColor = theme.colorScheme.tertiary;
+                remainingTime = state.session.remainingTime;
+                totalTime = state.session.totalTime;
+              } else if (state is PomodoroCompleted) {
+                isRunning = false;
+                statusText = '完成';
+                statusColor = theme.colorScheme.primary;
+                remainingTime = _isFocusMode ? _focusDuration * 60 + _focusSeconds : _restDuration * 60 + _restSeconds;
+                totalTime = remainingTime;
+              }
+
+              final minutes = (remainingTime ~/ 60).toString().padLeft(2, '0');
+              final seconds = (remainingTime % 60).toString().padLeft(2, '0');
+
+              // 计算三个圆环的进度
+              // 最外圈：从0开始递增到100%
+              final elapsedTime = totalTime - remainingTime;
+              final totalProgress = elapsedTime / totalTime;
+
+              // 中间圈：分钟进度（1分钟一圈）
+              final minuteProgress = (remainingTime % 60) / 60;
+
+              // 内圈：秒进度（1秒一圈）
+              final secondProgress =
+                  1.0 - (seconds == '00' ? 1.0 : int.parse(seconds) / 60);
+
+              // 根据全屏状态决定显示内容
+              if (_isFullScreen) {
+                // 全屏模式：只显示核心内容，占据整个屏幕
+                return SizedBox.expand(
+                  child: Container(
+                    color: theme.scaffoldBackgroundColor,
+                    child: Center(
+                      child: SingleChildScrollView(
+                        physics: const BouncingScrollPhysics(),
+                        child: Padding(
+                          padding: const EdgeInsets.all(24.0),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              // 状态显示
+                              Text(
+                                statusText,
+                                style: TextStyle(
+                                  fontSize: 48,
+                                  fontWeight: FontWeight.w600,
+                                  color: statusColor,
+                                ),
+                              )
+                                  .animate()
+                                  .fadeIn(
+                                      duration:
+                                          const Duration(milliseconds: 500))
+                                  .scale(
+                                      duration:
+                                          const Duration(milliseconds: 300)),
+
+                              const SizedBox(height: 40),
+
+                              // 三圈番茄钟设计
+                              LayoutBuilder(builder: (context, constraints) {
+                                // 使用相对宽度，适配不同屏幕
+                                final clockSize =
+                                    constraints.maxWidth * 0.7; // 时钟大小为屏幕宽度的70%
+                                final maxClockSize = 400.0; // 最大不超过400px
+                                final finalClockSize = clockSize > maxClockSize
+                                    ? maxClockSize
+                                    : clockSize;
+
+                                return SizedBox(
+                                  width: finalClockSize,
+                                  height: finalClockSize,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      if (_isEditingMinutes || _isEditingSeconds) {
+                                        int newMinutes = int.tryParse(_minutesController.text) ?? 0;
+                                        newMinutes = newMinutes.clamp(0, 99);
+                                        int newSeconds = int.tryParse(_secondsController.text) ?? 0;
+                                        newSeconds = newSeconds.clamp(0, 59);
+                                        setState(() {
+                                          if (_isFocusMode) {
+                                            _focusDuration = newMinutes;
+                                            _focusSeconds = newSeconds;
+                                          } else {
+                                            _restDuration = newMinutes;
+                                            _restSeconds = newSeconds;
+                                          }
+                                          _isEditingMinutes = false;
+                                          _isEditingSeconds = false;
+                                        });
+                                      }
+                                    },
+                                    child: Stack(
+                                    alignment: Alignment.center,
+                                    children: [
+                                      // 最外圈：总时间进度（从0开始递增）
+                                      SizedBox(
+                                        width: finalClockSize,
+                                        height: finalClockSize,
+                                        child: CircularProgressIndicator(
+                                          value: totalProgress,
+                                          strokeWidth: finalClockSize *
+                                              0.04, // 相对宽度，占时钟的4%
+                                          backgroundColor: theme.colorScheme
+                                              .surfaceContainerHighest,
+                                          valueColor:
+                                              AlwaysStoppedAnimation<Color>(
+                                                  statusColor),
+                                          strokeCap: StrokeCap.round,
+                                        ),
+                                      ),
+
+                                      // 中间圈：分钟进度（1分钟一圈）
+                                      if (_showMiddleCircle)
+                                        SizedBox(
+                                          width:
+                                              finalClockSize * 0.833, // 250/300
+                                          height: finalClockSize * 0.833,
+                                          child: CircularProgressIndicator(
+                                            value: minuteProgress,
+                                            strokeWidth:
+                                                finalClockSize * 0.027, // 8/300
+                                            backgroundColor: theme.colorScheme
+                                                .surfaceContainerHighest
+                                                .withValues(alpha: 0.7),
+                                            valueColor:
+                                                AlwaysStoppedAnimation<Color>(
+                                                    statusColor.withValues(
+                                                        alpha: 0.7)),
+                                            strokeCap: StrokeCap.round,
+                                          ),
+                                        ),
+
+                                      // 内圈：秒进度（1秒一圈）
+                                      if (_showInnerCircle)
+                                        SizedBox(
+                                          width:
+                                              finalClockSize * 0.667, // 200/300
+                                          height: finalClockSize * 0.667,
+                                          child: CircularProgressIndicator(
+                                            value: secondProgress,
+                                            strokeWidth:
+                                                finalClockSize * 0.02, // 6/300
+                                            backgroundColor: theme.colorScheme
+                                                .surfaceContainerHighest
+                                                .withValues(alpha: 0.5),
+                                            valueColor:
+                                                AlwaysStoppedAnimation<Color>(
+                                                    statusColor.withValues(
+                                                        alpha: 0.5)),
+                                            strokeCap: StrokeCap.round,
+                                          ),
+                                        ),
+
+                                      // 中心时间显示
+                                      Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          // 可点击的时间显示
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            children: [
+                                              // 分钟部分
+                                              GestureDetector(
+                                                onTap: () {
+                                                  if (state is PomodoroInitial || state is PomodoroCompleted) {
+                                                    setState(() {
+                                                      _isEditingMinutes = true;
+                                                      _isEditingSeconds = false;
+                                                      _minutesController.text = minutes;
+                                                    });
+                                                    Future.delayed(const Duration(milliseconds: 100), () {
+                                                      if (mounted) {
+                                                        FocusScope.of(context).requestFocus(_minutesFocusNode);
+                                                      }
+                                                    });
+                                                  }
+                                                },
+                                                child: _isEditingMinutes
+                                                    ? Container(
+                                                        width: finalClockSize * 0.25,
+                                                        height: finalClockSize * 0.3,
+                                                        decoration: BoxDecoration(
+                                                          color: theme.colorScheme.surface,
+                                                          borderRadius: BorderRadius.circular(8),
+                                                          border: Border.all(
+                                                            color: theme.colorScheme.primary,
+                                                            width: 2,
+                                                          ),
+                                                        ),
+                                                        child: TextField(
+                                                          controller: _minutesController,
+                                                          focusNode: _minutesFocusNode,
+                                                          autofocus: true,
+                                                          keyboardType: TextInputType.number,
+                                                          textAlign: TextAlign.center,
+                                                          style: TextStyle(
+                                                            fontSize: finalClockSize * 0.25,
+                                                            fontWeight: FontWeight.w700,
+                                                            color: theme.colorScheme.onSurface,
+                                                          ),
+                                                          decoration: const InputDecoration(
+                                                            border: InputBorder.none,
+                                                            contentPadding: EdgeInsets.zero,
+                                                          ),
+                                                          onSubmitted: (value) {
+                                                            // 提交分钟输入
+                                                            int newMinutes = int.tryParse(value) ?? 0;
+                                                            newMinutes = newMinutes.clamp(0, 99);
+                                                            setState(() {
+                                                              if (_isFocusMode) {
+                                                                _focusDuration = newMinutes;
+                                                              } else {
+                                                                _restDuration = newMinutes;
+                                                              }
+                                                              _isEditingMinutes = false;
+                                                            });
+                                                          },
+                                                          onTapOutside: (event) {
+                                                            // 点击外部关闭编辑
+                                                            int newMinutes = int.tryParse(_minutesController.text) ?? 0;
+                                                            newMinutes = newMinutes.clamp(0, 99);
+                                                            setState(() {
+                                                              if (_isFocusMode) {
+                                                                _focusDuration = newMinutes;
+                                                              } else {
+                                                                _restDuration = newMinutes;
+                                                              }
+                                                              _isEditingMinutes = false;
+                                                            });
+                                                          },
+                                                        ),
+                                                      )
+                                                    : Container(
+                                                        padding: EdgeInsets.symmetric(
+                                                          horizontal: finalClockSize * 0.02,
+                                                          vertical: finalClockSize * 0.01,
+                                                        ),
+                                                        child: Text(
+                                                          minutes,
+                                                          style: TextStyle(
+                                                            fontSize: finalClockSize * 0.25,
+                                                            fontWeight: FontWeight.w700,
+                                                            color:
+                                                                theme.colorScheme.onSurface,
+                                                          ),
+                                                        ),
+                                                      ),
+                                              ),
+                                              Text(
+                                                ':',
+                                                style: TextStyle(
+                                                  fontSize: finalClockSize * 0.25,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: theme.colorScheme.onSurface,
+                                                ),
+                                              ),
+                                              // 秒部分
+                                              GestureDetector(
+                                                onTap: () {
+                                                  if (state is PomodoroInitial || state is PomodoroCompleted) {
+                                                    setState(() {
+                                                      _isEditingSeconds = true;
+                                                      _isEditingMinutes = false;
+                                                      _secondsController.text = seconds;
+                                                    });
+                                                    Future.delayed(const Duration(milliseconds: 100), () {
+                                                      if (mounted) {
+                                                        FocusScope.of(context).requestFocus(_secondsFocusNode);
+                                                      }
+                                                    });
+                                                  }
+                                                },
+                                                child: _isEditingSeconds
+                                                    ? Container(
+                                                        width: finalClockSize * 0.25,
+                                                        height: finalClockSize * 0.3,
+                                                        decoration: BoxDecoration(
+                                                          color: theme.colorScheme.surface,
+                                                          borderRadius: BorderRadius.circular(8),
+                                                          border: Border.all(
+                                                            color: theme.colorScheme.primary,
+                                                            width: 2,
+                                                          ),
+                                                        ),
+                                                        child: TextField(
+                                                          controller: _secondsController,
+                                                          focusNode: _secondsFocusNode,
+                                                          autofocus: true,
+                                                          keyboardType: TextInputType.number,
+                                                          textAlign: TextAlign.center,
+                                                          style: TextStyle(
+                                                            fontSize: finalClockSize * 0.25,
+                                                            fontWeight: FontWeight.w700,
+                                                            color: theme.colorScheme.onSurface,
+                                                          ),
+                                                          decoration: const InputDecoration(
+                                                            border: InputBorder.none,
+                                                            contentPadding: EdgeInsets.zero,
+                                                          ),
+                                                          onSubmitted: (value) {
+                                                            // 提交秒输入
+                                                            int newSeconds = int.tryParse(value) ?? 0;
+                                                            newSeconds = newSeconds.clamp(0, 59);
+                                                            setState(() {
+                                                              if (_isFocusMode) {
+                                                                _focusSeconds = newSeconds;
+                                                              } else {
+                                                                _restSeconds = newSeconds;
+                                                              }
+                                                              _isEditingSeconds = false;
+                                                            });
+                                                          },
+                                                          onTapOutside: (event) {
+                                                            // 点击外部关闭编辑
+                                                            int newSeconds = int.tryParse(_secondsController.text) ?? 0;
+                                                            newSeconds = newSeconds.clamp(0, 59);
+                                                            setState(() {
+                                                              if (_isFocusMode) {
+                                                                _focusSeconds = newSeconds;
+                                                              } else {
+                                                                _restSeconds = newSeconds;
+                                                              }
+                                                              _isEditingSeconds = false;
+                                                            });
+                                                          },
+                                                        ),
+                                                      )
+                                                    : Container(
+                                                        padding: EdgeInsets.symmetric(
+                                                          horizontal: finalClockSize * 0.02,
+                                                          vertical: finalClockSize * 0.01,
+                                                        ),
+                                                        child: Text(
+                                                          seconds,
+                                                          style: TextStyle(
+                                                            fontSize: finalClockSize * 0.25,
+                                                            fontWeight: FontWeight.w700,
+                                                            color: theme.colorScheme.onSurface,
+                                                          ),
+                                                        ),
+                                                      ),
+                                              ),
+                                            ],
+                                          ).animate().fadeIn(
+                                              duration: const Duration(
+                                                  milliseconds: 500)),
+                                          SizedBox(
+                                              height: finalClockSize *
+                                                  0.027), // 8/300
+                                          Text(
+                                            '${totalTime ~/ 60} 分钟',
+                                            style: TextStyle(
+                                              fontSize: finalClockSize *
+                                                  0.08, // 增大字体大小
+                                              color: theme.colorScheme.onSurface
+                                                  .withValues(alpha: 0.6),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                  ),
+                                );
+                              })
+                                  .animate()
+                                  .fadeIn(
+                                      duration:
+                                          const Duration(milliseconds: 500))
+                                  .scale(
+                                      duration:
+                                          const Duration(milliseconds: 300)),
+
+                              const SizedBox(height: 40),
+
+                              // 控制按钮区域：开始/重置 + 全屏退出按钮
+                              LayoutBuilder(builder: (context, constraints) {
+                                final screenWidth = constraints.maxWidth;
+
+                                return Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    // 顶部：开始/暂停按钮 + 重置按钮
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.center,
+                                      children: [
+                                        // 开始/暂停/停止按钮
+                                    ElevatedButton(
+                                      onPressed: () {
+                                        if (state is PomodoroInitial) {
+                                          // 初始状态，开始番茄钟
+                                          context.read<PomodoroBloc>().add(
+                                                StartPomodoro(
+                                                  duration: _isFocusMode
+                                                      ? _focusDuration * 60 + _focusSeconds
+                                                      : _restDuration * 60 + _restSeconds,
+                                                  restDuration: _isFocusMode
+                                                      ? _restDuration * 60 + _restSeconds
+                                                      : _focusDuration * 60 + _focusSeconds,
+                                                  initialState: _isFocusMode
+                                                      ? PomodoroState.focusing
+                                                      : PomodoroState.resting,
+                                                  isVibrationEnabled:
+                                                      _isVibrationEnabled,
+                                                  isAudioEnabled:
+                                                      _isAudioEnabled,
+                                                  isRandomAudioEnabled:
+                                                      _isRandomAudioEnabled,
+                                                  isAudioSelectionEnabled:
+                                                      _isAudioSelectionEnabled,
+                                                  selectedAudio:
+                                                      _selectedAudio,
+                                                ),
+                                              );
+                                        } else if (state is PomodoroRunning) {
+                                          // 运行状态，暂停番茄钟
+                                          context
+                                              .read<PomodoroBloc>()
+                                              .add(PausePomodoro());
+                                        } else if (state is PomodoroPaused) {
+                                          context.read<PomodoroBloc>().add(
+                                                ResumePomodoro(
+                                                  pomodoroId: state.session.pomodoroId,
+                                                  remainingTime: state.session.remainingTime,
+                                                  originalTotalTime: state.session.totalTime,
+                                                  initialState: state.session.state,
+                                                  isVibrationEnabled: _isVibrationEnabled,
+                                                  isAudioEnabled: _isAudioEnabled,
+                                                ),
+                                              );
+                                        } else if (state is PomodoroCompleted) {
+                                          // 完成状态，停止铃声/震动，重置番茄钟
+                                          context
+                                              .read<PomodoroBloc>()
+                                              .add(ResetPomodoro());
+                                        }
+                                      },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: state is PomodoroCompleted
+                                            ? Colors.red // 完成状态显示红色
+                                            : statusColor,
+                                        foregroundColor: Colors.white,
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal: screenWidth *
+                                              0.035, // 减小水平内边距
+                                          vertical: screenWidth *
+                                              0.015, // 减小垂直内边距
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                              screenWidth * 0.03), // 减小圆角
+                                        ),
+                                        textStyle: TextStyle(
+                                          fontSize: screenWidth *
+                                              0.018, // 减小字体大小
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        state is PomodoroRunning
+                                            ? '暂停'
+                                            : state is PomodoroCompleted
+                                                ? '停止'
+                                                : '开始',
+                                      ),
+                                    )
+                                            .animate()
+                                            .fadeIn(
+                                                duration: const Duration(
+                                                    milliseconds: 500))
+                                            .scale(
+                                                duration: const Duration(
+                                                    milliseconds: 300)),
+
+                                        SizedBox(
+                                            width:
+                                                screenWidth * 0.015), // 减小按钮间距
+
+                                        // 重置按钮
+                                        ElevatedButton(
+                                          onPressed: () {
+                                            context
+                                                .read<PomodoroBloc>()
+                                                .add(ResetPomodoro());
+                                          },
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor:
+                                                Colors.grey.shade200,
+                                            foregroundColor: Colors.black87,
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal:
+                                                  screenWidth * 0.03, // 减小水平内边距
+                                              vertical: screenWidth *
+                                                  0.015, // 减小垂直内边距
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                      screenWidth *
+                                                          0.03), // 减小圆角
+                                            ),
+                                            textStyle: TextStyle(
+                                              fontSize:
+                                                  screenWidth * 0.018, // 减小字体大小
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          child: const Text('重置'),
+                                        )
+                                            .animate()
+                                            .fadeIn(
+                                                duration: const Duration(
+                                                    milliseconds: 500),
+                                                delay: const Duration(
+                                                    milliseconds: 100))
+                                            .scale(
+                                                duration: const Duration(
+                                                    milliseconds: 300),
+                                                delay: const Duration(
+                                                    milliseconds: 100)),
+                                      ],
+                                    ),
+
+                                    SizedBox(
+                                        height: screenWidth * 0.02), // 减小按钮间距
+
+                                    // 底部：记录中断按钮 + 退出全屏按钮
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.center,
+                                      children: [
+                                        // 记录中断按钮
+                                        ElevatedButton(
+                                          onPressed: () {
+                                            // 显示中断记录弹窗
+                                            setState(() {
+                                              _interruptionController.clear();
+                                              _isInterruptionDialogVisible =
+                                                  true;
+                                            });
+                                          },
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor:
+                                                Colors.orange.shade400,
+                                            foregroundColor: Colors.white,
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal: screenWidth *
+                                                  0.035, // 减小水平内边距
+                                              vertical: screenWidth *
+                                                  0.015, // 减小垂直内边距
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                      screenWidth *
+                                                          0.03), // 减小圆角
+                                            ),
+                                            textStyle: TextStyle(
+                                              fontSize:
+                                                  screenWidth * 0.018, // 减小字体大小
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                          child: const Text('记录中断'),
+                                        )
+                                            .animate()
+                                            .fadeIn(
+                                                duration: const Duration(
+                                                    milliseconds: 500),
+                                                delay: const Duration(
+                                                    milliseconds: 200))
+                                            .scale(
+                                                duration: const Duration(
+                                                    milliseconds: 300),
+                                                delay: const Duration(
+                                                    milliseconds: 200)),
+
+                                        SizedBox(
+                                            width:
+                                                screenWidth * 0.015), // 减小按钮间距
+
+                                        // 退出全屏按钮
+                                        ElevatedButton(
+                                          onPressed: () async {
+                                            setState(() {
+                                              _isFullScreen = false;
+                                            });
+                                          },
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor:
+                                                Colors.grey.shade200,
+                                            foregroundColor: Colors.black87,
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal: screenWidth *
+                                                  0.035, // 减小水平内边距
+                                              vertical: screenWidth *
+                                                  0.015, // 减小垂直内边距
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                      screenWidth *
+                                                          0.03), // 减小圆角
+                                            ),
+                                            textStyle: TextStyle(
+                                              fontSize:
+                                                  screenWidth * 0.018, // 减小字体大小
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          child: const Text('退出全屏'),
+                                        )
+                                            .animate()
+                                            .fadeIn(
+                                                duration: const Duration(
+                                                    milliseconds: 500),
+                                                delay: const Duration(
+                                                    milliseconds: 300))
+                                            .scale(
+                                                duration: const Duration(
+                                                    milliseconds: 300),
+                                                delay: const Duration(
+                                                    milliseconds: 300)),
+                                      ],
+                                    ),
+                                  ],
+                                );
+                              }),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              } else {
+                // 普通模式：显示完整内容
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // 状态显示
+                      Text(
+                        statusText,
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.w600,
+                          color: statusColor,
+                        ),
+                      )
+                          .animate()
+                          .fadeIn(duration: const Duration(milliseconds: 500))
+                          .scale(duration: const Duration(milliseconds: 300)),
+
+                      const SizedBox(height: 40),
+
+                      // 三圈番茄钟设计
+                      LayoutBuilder(builder: (context, constraints) {
+                        // 使用相对宽度，适配不同屏幕
+                        final clockSize =
+                            constraints.maxWidth * 0.7; // 时钟大小为屏幕宽度的70%
+                        final maxClockSize = 300.0; // 最大不超过300px
+                        final finalClockSize =
+                            clockSize > maxClockSize ? maxClockSize : clockSize;
+
+                        return SizedBox(
+                          width: finalClockSize,
+                          height: finalClockSize,
+                          child: GestureDetector(
+                            onTap: () {
+                              if (_isEditingMinutes || _isEditingSeconds) {
+                                int newMinutes = int.tryParse(_minutesController.text) ?? 0;
+                                newMinutes = newMinutes.clamp(0, 99);
+                                int newSeconds = int.tryParse(_secondsController.text) ?? 0;
+                                newSeconds = newSeconds.clamp(0, 59);
+                                setState(() {
+                                  if (_isFocusMode) {
+                                    _focusDuration = newMinutes;
+                                    _focusSeconds = newSeconds;
+                                  } else {
+                                    _restDuration = newMinutes;
+                                    _restSeconds = newSeconds;
+                                  }
+                                  _isEditingMinutes = false;
+                                  _isEditingSeconds = false;
+                                });
+                              }
+                            },
+                            child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              // 最外圈：总时间进度（从0开始递增）
+                              SizedBox(
+                                width: finalClockSize,
+                                height: finalClockSize,
+                                child: CircularProgressIndicator(
+                                  value: totalProgress,
+                                  strokeWidth:
+                                      finalClockSize * 0.04, // 相对宽度，占时钟的4%
+                                  backgroundColor:
+                                      theme.colorScheme.surfaceContainerHighest,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                      statusColor),
+                                  strokeCap: StrokeCap.round,
+                                ),
+                              ),
+
+                              // 中间圈：分钟进度（1分钟一圈）
+                              if (_showMiddleCircle)
+                                SizedBox(
+                                  width: finalClockSize * 0.833, // 250/300
+                                  height: finalClockSize * 0.833,
+                                  child: CircularProgressIndicator(
+                                    value: minuteProgress,
+                                    strokeWidth:
+                                        finalClockSize * 0.027, // 8/300
+                                    backgroundColor: theme
+                                        .colorScheme.surfaceContainerHighest
+                                        .withValues(alpha: 0.7),
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                        statusColor.withValues(alpha: 0.7)),
+                                    strokeCap: StrokeCap.round,
+                                  ),
+                                ),
+
+                              // 内圈：秒进度（1秒一圈）
+                              if (_showInnerCircle)
+                                SizedBox(
+                                  width: finalClockSize * 0.667, // 200/300
+                                  height: finalClockSize * 0.667,
+                                  child: CircularProgressIndicator(
+                                    value: secondProgress,
+                                    strokeWidth: finalClockSize * 0.02, // 6/300
+                                    backgroundColor: theme
+                                        .colorScheme.surfaceContainerHighest
+                                        .withValues(alpha: 0.5),
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                        statusColor.withValues(alpha: 0.5)),
+                                    strokeCap: StrokeCap.round,
+                                  ),
+                                ),
+
+                              // 中心时间显示
+                              Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  // 可点击的时间显示
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      // 分钟部分
+                                      GestureDetector(
+                                        onTap: () {
+                                          if (state is PomodoroInitial || state is PomodoroCompleted) {
+                                            setState(() {
+                                              _isEditingMinutes = true;
+                                              _isEditingSeconds = false;
+                                              _minutesController.text = minutes;
+                                            });
+                                            Future.delayed(const Duration(milliseconds: 100), () {
+                                              if (mounted) {
+                                                FocusScope.of(context).requestFocus(_minutesFocusNode);
+                                              }
+                                            });
+                                          }
+                                        },
+                                        child: _isEditingMinutes
+                                            ? Container(
+                                                width: finalClockSize * 0.25,
+                                                height: finalClockSize * 0.3,
+                                                decoration: BoxDecoration(
+                                                  color: theme.colorScheme.surface,
+                                                  borderRadius: BorderRadius.circular(8),
+                                                  border: Border.all(
+                                                    color: theme.colorScheme.primary,
+                                                    width: 2,
+                                                  ),
+                                                ),
+                                                child: TextField(
+                                                  controller: _minutesController,
+                                                  focusNode: _minutesFocusNode,
+                                                  autofocus: true,
+                                                  keyboardType: TextInputType.number,
+                                                  textAlign: TextAlign.center,
+                                                  style: TextStyle(
+                                                    fontSize: finalClockSize * 0.213,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: theme.colorScheme.onSurface,
+                                                  ),
+                                                  decoration: const InputDecoration(
+                                                    border: InputBorder.none,
+                                                    contentPadding: EdgeInsets.zero,
+                                                  ),
+                                                  onSubmitted: (value) {
+                                                    // 提交分钟输入
+                                                    int newMinutes = int.tryParse(value) ?? 0;
+                                                    newMinutes = newMinutes.clamp(0, 99);
+                                                    setState(() {
+                                                      if (_isFocusMode) {
+                                                        _focusDuration = newMinutes;
+                                                      } else {
+                                                        _restDuration = newMinutes;
+                                                      }
+                                                      _isEditingMinutes = false;
+                                                    });
+                                                  },
+                                                  onTapOutside: (event) {
+                                                    // 点击外部关闭编辑
+                                                    int newMinutes = int.tryParse(_minutesController.text) ?? 0;
+                                                    newMinutes = newMinutes.clamp(0, 99);
+                                                    setState(() {
+                                                      if (_isFocusMode) {
+                                                        _focusDuration = newMinutes;
+                                                      } else {
+                                                        _restDuration = newMinutes;
+                                                      }
+                                                      _isEditingMinutes = false;
+                                                    });
+                                                  },
+                                                ),
+                                              )
+                                            : Container(
+                                                padding: EdgeInsets.symmetric(
+                                                  horizontal: finalClockSize * 0.02,
+                                                  vertical: finalClockSize * 0.01,
+                                                ),
+                                                child: Text(
+                                                  minutes,
+                                                  style: TextStyle(
+                                                    fontSize: finalClockSize * 0.213,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: theme.colorScheme.onSurface,
+                                                  ),
+                                                ),
+                                              ),
+                                      ),
+                                      Text(
+                                        ':',
+                                        style: TextStyle(
+                                          fontSize: finalClockSize * 0.213,
+                                          fontWeight: FontWeight.w700,
+                                          color: theme.colorScheme.onSurface,
+                                        ),
+                                      ),
+                                      // 秒部分
+                                      GestureDetector(
+                                        onTap: () {
+                                          if (state is PomodoroInitial || state is PomodoroCompleted) {
+                                            setState(() {
+                                              _isEditingSeconds = true;
+                                              _isEditingMinutes = false;
+                                              _secondsController.text = seconds;
+                                            });
+                                            Future.delayed(const Duration(milliseconds: 100), () {
+                                              if (mounted) {
+                                                FocusScope.of(context).requestFocus(_secondsFocusNode);
+                                              }
+                                            });
+                                          }
+                                        },
+                                        child: _isEditingSeconds
+                                            ? Container(
+                                                width: finalClockSize * 0.25,
+                                                height: finalClockSize * 0.3,
+                                                decoration: BoxDecoration(
+                                                  color: theme.colorScheme.surface,
+                                                  borderRadius: BorderRadius.circular(8),
+                                                  border: Border.all(
+                                                    color: theme.colorScheme.primary,
+                                                    width: 2,
+                                                  ),
+                                                ),
+                                                child: TextField(
+                                                  controller: _secondsController,
+                                                  focusNode: _secondsFocusNode,
+                                                  autofocus: true,
+                                                  keyboardType: TextInputType.number,
+                                                  textAlign: TextAlign.center,
+                                                  style: TextStyle(
+                                                    fontSize: finalClockSize * 0.213,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: theme.colorScheme.onSurface,
+                                                  ),
+                                                  decoration: const InputDecoration(
+                                                    border: InputBorder.none,
+                                                    contentPadding: EdgeInsets.zero,
+                                                  ),
+                                                  onSubmitted: (value) {
+                                                    // 提交秒输入
+                                                    int newSeconds = int.tryParse(value) ?? 0;
+                                                    newSeconds = newSeconds.clamp(0, 59);
+                                                    setState(() {
+                                                      if (_isFocusMode) {
+                                                        _focusSeconds = newSeconds;
+                                                      } else {
+                                                        _restSeconds = newSeconds;
+                                                      }
+                                                      _isEditingSeconds = false;
+                                                    });
+                                                  },
+                                                  onTapOutside: (event) {
+                                                    // 点击外部关闭编辑
+                                                    int newSeconds = int.tryParse(_secondsController.text) ?? 0;
+                                                    newSeconds = newSeconds.clamp(0, 59);
+                                                    setState(() {
+                                                      if (_isFocusMode) {
+                                                        _focusSeconds = newSeconds;
+                                                      } else {
+                                                        _restSeconds = newSeconds;
+                                                      }
+                                                      _isEditingSeconds = false;
+                                                    });
+                                                  },
+                                                ),
+                                              )
+                                            : Container(
+                                                padding: EdgeInsets.symmetric(
+                                                  horizontal: finalClockSize * 0.02,
+                                                  vertical: finalClockSize * 0.01,
+                                                ),
+                                                child: Text(
+                                                  seconds,
+                                                  style: TextStyle(
+                                                    fontSize: finalClockSize * 0.213,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: theme.colorScheme.onSurface,
+                                                  ),
+                                                ),
+                                              ),
+                                      ),
+                                    ],
+                                  ).animate().fadeIn(
+                                      duration: const Duration(
+                                          milliseconds: 500)),
+                                  SizedBox(
+                                      height: finalClockSize * 0.027), // 8/300
+                                  Text(
+                                    '${totalTime ~/ 60} 分钟',
+                                    style: TextStyle(
+                                      fontSize: finalClockSize * 0.06, // 18/300
+                                      color: theme.colorScheme.onSurface
+                                          .withValues(alpha: 0.6),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                          ),
+                        );
+                      })
+                          .animate()
+                          .fadeIn(duration: const Duration(milliseconds: 500))
+                          .scale(duration: const Duration(milliseconds: 300)),
+
+                      const SizedBox(height: 40),
+
+                      // 控制按钮区域：开始/重置 + 波动开关（时钟正下方）
+                      LayoutBuilder(builder: (context, constraints) {
+                        final screenWidth = constraints.maxWidth;
+
+                        return Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // 左侧：开始/重置按钮 + 记录中断按钮（时钟正下方）
+                            Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                // 顶部：开始/暂停按钮 + 重置按钮 + 全屏按钮
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    // 开始/暂停/停止按钮
+                                    ElevatedButton(
+                                      onPressed: () {
+                                        if (state is PomodoroInitial) {
+                                          // 初始状态，开始番茄钟
+                                          context.read<PomodoroBloc>().add(
+                                                StartPomodoro(
+                                                  duration: _isFocusMode
+                                                      ? _focusDuration * 60 + _focusSeconds
+                                                      : _restDuration * 60 + _restSeconds,
+                                                  restDuration: _isFocusMode
+                                                      ? _restDuration * 60 + _restSeconds
+                                                      : _focusDuration * 60 + _focusSeconds,
+                                                  initialState: _isFocusMode
+                                                      ? PomodoroState.focusing
+                                                      : PomodoroState.resting,
+                                                  isVibrationEnabled:
+                                                      _isVibrationEnabled,
+                                                  isAudioEnabled:
+                                                      _isAudioEnabled,
+                                                ),
+                                              );
+                                        } else if (state is PomodoroRunning) {
+                                          // 运行状态，暂停番茄钟
+                                          context
+                                              .read<PomodoroBloc>()
+                                              .add(PausePomodoro());
+                                        } else if (state is PomodoroPaused) {
+                                          context.read<PomodoroBloc>().add(
+                                                ResumePomodoro(
+                                                  pomodoroId: state.session.pomodoroId,
+                                                  remainingTime: state.session.remainingTime,
+                                                  originalTotalTime: state.session.totalTime,
+                                                  initialState: state.session.state,
+                                                  isVibrationEnabled: _isVibrationEnabled,
+                                                  isAudioEnabled: _isAudioEnabled,
+                                                  isRandomAudioEnabled: _isRandomAudioEnabled,
+                                                  isAudioSelectionEnabled: _isAudioSelectionEnabled,
+                                                  selectedAudio: _selectedAudio,
+                                                ),
+                                              );
+                                        } else if (state is PomodoroCompleted) {
+                                          // 完成状态，停止铃声/震动，重置番茄钟
+                                          context
+                                              .read<PomodoroBloc>()
+                                              .add(ResetPomodoro());
+                                        }
+                                      },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: state is PomodoroCompleted
+                                            ? Colors.red // 完成状态显示红色
+                                            : statusColor,
+                                        foregroundColor: Colors.white,
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal:
+                                              screenWidth * 0.035, // 减小水平内边距
+                                          vertical:
+                                              screenWidth * 0.015, // 减小垂直内边距
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                              screenWidth * 0.03), // 减小圆角
+                                        ),
+                                        textStyle: TextStyle(
+                                          fontSize:
+                                              screenWidth * 0.018, // 减小字体大小
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        state is PomodoroRunning
+                                            ? '暂停'
+                                            : state is PomodoroCompleted
+                                                ? '停止'
+                                                : '开始',
+                                      ),
+                                    )
+                                        .animate()
+                                        .fadeIn(
+                                            duration: const Duration(
+                                                milliseconds: 500))
+                                        .scale(
+                                            duration: const Duration(
+                                                milliseconds: 300)),
+
+                                    SizedBox(
+                                        width: screenWidth * 0.015), // 减小按钮间距
+
+                                    // 重置按钮
+                                    ElevatedButton(
+                                      onPressed: () {
+                                        context
+                                            .read<PomodoroBloc>()
+                                            .add(ResetPomodoro());
+                                      },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.grey.shade200,
+                                        foregroundColor: Colors.black87,
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal:
+                                              screenWidth * 0.03, // 减小水平内边距
+                                          vertical:
+                                              screenWidth * 0.015, // 减小垂直内边距
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                              screenWidth * 0.03), // 减小圆角
+                                        ),
+                                        textStyle: TextStyle(
+                                          fontSize:
+                                              screenWidth * 0.018, // 减小字体大小
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      child: const Text('重置'),
+                                    )
+                                        .animate()
+                                        .fadeIn(
+                                            duration: const Duration(
+                                                milliseconds: 500),
+                                            delay: const Duration(
+                                                milliseconds: 100))
+                                        .scale(
+                                            duration: const Duration(
+                                                milliseconds: 300),
+                                            delay: const Duration(
+                                                milliseconds: 100)),
+                                  ],
+                                ),
+
+                                SizedBox(height: screenWidth * 0.03), // 增大按钮间距
+
+                                // 底部：记录中断按钮 + 全屏按钮
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    // 记录中断按钮
+                                    ElevatedButton(
+                                      onPressed: () {
+                                        // 显示中断记录弹窗
+                                        setState(() {
+                                          _interruptionController.clear();
+                                          _isInterruptionDialogVisible = true;
+                                        });
+                                      },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.orange.shade400,
+                                        foregroundColor: Colors.white,
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal:
+                                              screenWidth * 0.035, // 减小水平内边距
+                                          vertical:
+                                              screenWidth * 0.015, // 减小垂直内边距
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                              screenWidth * 0.03), // 减小圆角
+                                        ),
+                                        textStyle: TextStyle(
+                                          fontSize:
+                                              screenWidth * 0.018, // 减小字体大小
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      child: const Text('记录中断'),
+                                    )
+                                        .animate()
+                                        .fadeIn(
+                                            duration: const Duration(
+                                                milliseconds: 500),
+                                            delay: const Duration(
+                                                milliseconds: 200))
+                                        .scale(
+                                            duration: const Duration(
+                                                milliseconds: 300),
+                                            delay: const Duration(
+                                                milliseconds: 200)),
+
+                                    SizedBox(
+                                        width: screenWidth * 0.015), // 减小按钮间距
+
+                                    // 全屏按钮
+                                    ElevatedButton(
+                                      onPressed: () async {
+                                        setState(() {
+                                          _isFullScreen = true;
+                                        });
+                                      },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.grey.shade200,
+                                        foregroundColor: Colors.black87,
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal:
+                                              screenWidth * 0.03, // 减小水平内边距
+                                          vertical:
+                                              screenWidth * 0.015, // 减小垂直内边距
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                              screenWidth * 0.03), // 减小圆角
+                                        ),
+                                        textStyle: TextStyle(
+                                          fontSize:
+                                              screenWidth * 0.018, // 减小字体大小
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      child: Icon(
+                                        Icons.fullscreen,
+                                        size: screenWidth * 0.025, // 减小图标大小
+                                      ),
+                                    )
+                                        .animate()
+                                        .fadeIn(
+                                            duration: const Duration(
+                                                milliseconds: 500),
+                                            delay: const Duration(
+                                                milliseconds: 300))
+                                        .scale(
+                                            duration: const Duration(
+                                                milliseconds: 300),
+                                            delay: const Duration(
+                                                milliseconds: 300)),
+                                  ],
+                                ),
+                              ],
+                            ),
+
+                            SizedBox(width: screenWidth * 0.04), // 间距
+
+                            // 右侧：波动开关：专注/休息模式切换
+                            SizedBox(
+                              width: screenWidth * 0.12, // 缩小宽度到屏幕12%
+                              child: Row(
+                                children: [
+                                  // 专注模式
+                                  Expanded(
+                                    child: GestureDetector(
+                                      onTap: () {
+                                        if (!isRunning) {
+                                          setState(() {
+                                            _isFocusMode = true;
+                                            // _duration 字段已移除，这里不需要赋值
+                                          });
+                                        }
+                                      },
+                                      child: Container(
+                                        padding: EdgeInsets.symmetric(
+                                          vertical:
+                                              screenWidth * 0.008, // 减小垂直内边距
+                                          horizontal:
+                                              screenWidth * 0.01, // 减小水平内边距
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: _isFocusMode
+                                              ? const Color(0xFFE76F51)
+                                              : Colors.grey.shade200,
+                                          borderRadius: const BorderRadius.only(
+                                            topLeft: Radius.circular(6), // 减小圆角
+                                            bottomLeft: Radius.circular(6),
+                                          ),
+                                        ),
+                                        child: Text(
+                                          '专注',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            fontSize:
+                                                screenWidth * 0.015, // 减小字体大小
+                                            fontWeight: FontWeight.w600,
+                                            color: _isFocusMode
+                                                ? Colors.white
+                                                : Colors.grey.shade600,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  // 休息模式
+                                  Expanded(
+                                    child: GestureDetector(
+                                      onTap: () {
+                                        if (!isRunning) {
+                                          setState(() {
+                                            _isFocusMode = false;
+                                            // _duration 字段已移除，这里不需要赋值
+                                          });
+                                        }
+                                      },
+                                      child: Container(
+                                        padding: EdgeInsets.symmetric(
+                                          vertical:
+                                              screenWidth * 0.008, // 减小垂直内边距
+                                          horizontal:
+                                              screenWidth * 0.01, // 减小水平内边距
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: !_isFocusMode
+                                              ? const Color(0xFF2A9D8F)
+                                              : Colors.grey.shade200,
+                                          borderRadius: const BorderRadius.only(
+                                            topRight:
+                                                Radius.circular(6), // 减小圆角
+                                            bottomRight: Radius.circular(6),
+                                          ),
+                                        ),
+                                        child: Text(
+                                          '休息',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
+                                            fontSize:
+                                                screenWidth * 0.015, // 减小字体大小
+                                            fontWeight: FontWeight.w600,
+                                            color: !_isFocusMode
+                                                ? Colors.white
+                                                : Colors.grey.shade600,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        );
+                      }),
+
+
+
+                      // 统计信息（折叠面板）
+                      Card(
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: ExpansionTile(
+                          title: const Text(
+                            '统计信息',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          trailing: Icon(
+                            _isStatsExpanded
+                                ? Icons.expand_less
+                                : Icons.expand_more,
+                            color: Colors.grey.shade600,
+                          ),
+                          onExpansionChanged: (expanded) {
+                            setState(() {
+                              _isStatsExpanded = expanded;
+                            });
+                          },
+                          children: [
+                            const Divider(height: 1),
+                            Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final screenWidth = constraints.maxWidth;
+
+                                  return Table(
+                                    border: TableBorder.all(
+                                        color: Colors.grey.shade200),
+                                    columnWidths: {
+                                      0: FixedColumnWidth(screenWidth * 0.25),
+                                      1: FixedColumnWidth(screenWidth * 0.2),
+                                      2: FixedColumnWidth(screenWidth * 0.2),
+                                      3: FixedColumnWidth(screenWidth * 0.2),
+                                      4: FixedColumnWidth(screenWidth * 0.15),
+                                    },
+                                    children: [
+                                      // 表头
+                                      TableRow(
+                                        decoration: BoxDecoration(
+                                          color: Colors.grey.shade50,
+                                        ),
+                                        children: [
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '类型',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade700,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '完成番茄钟数',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade700,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '持续时长',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade700,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '平均持续时长',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade700,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '中断次数',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade700,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      // 今日专注时钟行 - 红色背景
+                                      TableRow(
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFE76F51)
+                                              .withValues(alpha: 0.1),
+                                        ),
+                                        children: [
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '今日专注时钟',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w500,
+                                                  color:
+                                                      const Color(0xFFE76F51),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${_todayFocusStats['count']}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatDuration(_todayFocusStats['duration'] ?? 0),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatAverageDuration(_todayFocusStats['averageDuration'] ?? 0),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${_todayFocusStats['interruptions']}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      // 今日休息时钟行 - 绿色背景
+                                      TableRow(
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF2A9D8F)
+                                              .withValues(alpha: 0.1),
+                                        ),
+                                        children: [
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '今日休息时钟',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w500,
+                                                  color:
+                                                      const Color(0xFF2A9D8F),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${_todayRestStats['count']}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatDuration(_todayRestStats['duration'] ?? 0),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatAverageDuration(_todayRestStats['averageDuration'] ?? 0),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${_todayRestStats['interruptions']}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      // 今日总计行
+                                      TableRow(
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue
+                                              .withValues(alpha: 0.1),
+                                        ),
+                                        children: [
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '今日总计',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${(int.tryParse(_todayFocusStats['count'].toString()) ?? 0) + (int.tryParse(_todayRestStats['count'].toString()) ?? 0)}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatDuration((_todayFocusStats['duration'] ?? 0) + (_todayRestStats['duration'] ?? 0)),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatAverageDuration(
+                                                  ((_todayFocusStats['averageDuration'] ?? 0) * (int.tryParse(_todayFocusStats['count'].toString()) ?? 0) + 
+                                                   (_todayRestStats['averageDuration'] ?? 0) * (int.tryParse(_todayRestStats['count'].toString()) ?? 0)) / 
+                                                   ((int.tryParse(_todayFocusStats['count'].toString()) ?? 0) + (int.tryParse(_todayRestStats['count'].toString()) ?? 0) > 0 ? 
+                                                    (int.tryParse(_todayFocusStats['count'].toString()) ?? 0) + (int.tryParse(_todayRestStats['count'].toString()) ?? 0) : 1)
+                                                ),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${(int.tryParse(_todayFocusStats['interruptions'].toString()) ?? 0) + (int.tryParse(_todayRestStats['interruptions'].toString()) ?? 0)}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      // 昨日专注时钟行 - 灰色背景
+                                      TableRow(
+                                        decoration: BoxDecoration(
+                                          color: Colors.grey
+                                              .withValues(alpha: 0.1),
+                                        ),
+                                        children: [
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '昨日专注时钟',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w500,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${_yesterdayFocusStats['count']}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatDuration(_yesterdayFocusStats['duration'] ?? 0),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatAverageDuration(_yesterdayFocusStats['averageDuration'] ?? 0),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${_yesterdayFocusStats['interruptions']}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      // 昨日休息时钟行 - 灰色背景
+                                      TableRow(
+                                        decoration: BoxDecoration(
+                                          color: Colors.grey
+                                              .withValues(alpha: 0.1),
+                                        ),
+                                        children: [
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '昨日休息时钟',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w500,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${_yesterdayRestStats['count']}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatDuration(_yesterdayRestStats['duration'] ?? 0),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatAverageDuration(_yesterdayRestStats['averageDuration'] ?? 0),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${_yesterdayRestStats['interruptions']}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      // 昨日总计行
+                                      TableRow(
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue
+                                              .withValues(alpha: 0.1),
+                                        ),
+                                        children: [
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '昨日总计',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${(int.tryParse(_yesterdayFocusStats['count'].toString()) ?? 0) + (int.tryParse(_yesterdayRestStats['count'].toString()) ?? 0)}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatDuration((_yesterdayFocusStats['duration'] ?? 0) + (_yesterdayRestStats['duration'] ?? 0)),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                _formatAverageDuration(
+                                                  ((_yesterdayFocusStats['averageDuration'] ?? 0) * (int.tryParse(_yesterdayFocusStats['count'].toString()) ?? 0) + 
+                                                   (_yesterdayRestStats['averageDuration'] ?? 0) * (int.tryParse(_yesterdayRestStats['count'].toString()) ?? 0)) / 
+                                                   ((int.tryParse(_yesterdayFocusStats['count'].toString()) ?? 0) + (int.tryParse(_yesterdayRestStats['count'].toString()) ?? 0) > 0 ? 
+                                                    (int.tryParse(_yesterdayFocusStats['count'].toString()) ?? 0) + (int.tryParse(_yesterdayRestStats['count'].toString()) ?? 0) : 1)
+                                                ),
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          TableCell(
+                                            child: Padding(
+                                              padding: EdgeInsets.symmetric(
+                                                  vertical: screenWidth * 0.015,
+                                                  horizontal:
+                                                      screenWidth * 0.01),
+                                              child: Text(
+                                                '${(int.tryParse(_yesterdayFocusStats['interruptions'].toString()) ?? 0) + (int.tryParse(_yesterdayRestStats['interruptions'].toString()) ?? 0)}',
+                                                style: TextStyle(
+                                                  fontSize: screenWidth * 0.02,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                          .animate()
+                          .fadeIn(
+                              duration: const Duration(milliseconds: 500),
+                              delay: const Duration(milliseconds: 200))
+                          .slideY(
+                              begin: 20,
+                              duration: const Duration(milliseconds: 300),
+                              delay: const Duration(milliseconds: 200)),
+                    
+                    // 可视化图表区域
+                    const SizedBox(height: 20),
+                    _buildVisualizationCharts(),
+                  ],
+                  ),
+                );
+              }
+            },
+          ),
+          ),
+          // 中断记录弹窗
+          if (_isInterruptionDialogVisible)
+            Container(
+              color: Colors.black.withValues(alpha: 0.5), // 半透明背景
+              alignment: Alignment.center,
+              child: Card(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                elevation: 5,
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 弹窗标题
+                      const Text(
+                        '记录中断原因',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black87,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // 中断原因输入框
+                      TextField(
+                        controller: _interruptionController,
+                        maxLines: 4,
+                        decoration: InputDecoration(
+                          hintText: '请输入中断原因...',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          contentPadding: const EdgeInsets.all(12),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      // 操作按钮
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          // 取消按钮
+                          TextButton(
+                            onPressed: () {
+                              setState(() {
+                                _isInterruptionDialogVisible = false;
+                              });
+                            },
+                            child: const Text('取消'),
+                          ),
+                          const SizedBox(width: 12),
+                          // 保存按钮
+                          ElevatedButton(
+                            onPressed: () {
+                              // 保存中断原因
+                              final reason =
+                                  _interruptionController.text.trim();
+                              if (reason.isNotEmpty) {
+                                // 发送中断记录事件到Bloc
+                                context
+                                    .read<PomodoroBloc>()
+                                    .add(RecordInterruption(reason));
+                                // 关闭弹窗
+                                setState(() {
+                                  _isInterruptionDialogVisible = false;
+                                });
+                              }
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orange.shade400,
+                              foregroundColor: Colors.white,
+                            ),
+                            child: const Text('保存'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建可视化图表区域
+  Widget _buildVisualizationCharts() {
+    final theme = ref.watch(currentThemeProvider);
+    
+    if (!_hasLoadedHistory && !_isLoadingHistory) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadHistoryTrendData();
+      });
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 时间范围选择器
+        _buildTimeRangeSelector(theme),
+        const SizedBox(height: 20),
+        
+        // 专注时长趋势图
+        _buildFocusTrendChart(theme),
+        const SizedBox(height: 20),
+        
+        // 专注时段分布图
+        _buildHourlyDistributionChart(theme),
+        const SizedBox(height: 20),
+        
+        // 完成效率饼图
+        _buildCompletionPieChart(theme),
+      ],
+    );
+  }
+
+  /// 构建时间范围选择器
+  Widget _buildTimeRangeSelector(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline,
+          width: 1,
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _buildTimeRangeButton('周', 'week', theme),
+          _buildTimeRangeButton('月', 'month', theme),
+          _buildTimeRangeButton('年', 'year', theme),
+          _buildCustomTimeRangeButton(theme),
+        ],
+      ),
+    );
+  }
+
+  /// 构建时间范围按钮
+  Widget _buildTimeRangeButton(String label, String value, ThemeData theme) {
+    final isSelected = _selectedTimeRange == value;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            _selectedTimeRange = value;
+          });
+          _loadHistoryTrendData();
+        },
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: isSelected ? theme.colorScheme.primary : theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isSelected ? theme.colorScheme.primary : theme.colorScheme.outline,
+              width: 1,
+            ),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCustomTimeRangeButton(ThemeData theme) {
+    final isSelected = _selectedTimeRange == 'custom';
+    String label = '自定义';
+    if (isSelected && _customStartDate != null && _customEndDate != null) {
+      label = '${_customStartDate!.month}/${_customStartDate!.day}-${_customEndDate!.month}/${_customEndDate!.day}';
+    }
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          if (isSelected && _customStartDate != null) {
+            setState(() {
+              _selectedTimeRange = 'custom';
+            });
+            _loadHistoryTrendData();
+          } else {
+            _showCustomDateRangeDialog();
+          }
+        },
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: isSelected ? theme.colorScheme.primary : theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isSelected ? theme.colorScheme.primary : theme.colorScheme.outline,
+              width: 1,
+            ),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                fontSize: label.length > 4 ? 11 : 14,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showCustomDateRangeDialog() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+
+    DateTime startDate = _customStartDate ?? today.subtract(const Duration(days: 6));
+    DateTime endDate = _customEndDate ?? today;
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        DateTime tempStart = startDate;
+        DateTime tempEnd = endDate;
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            final theme = Theme.of(ctx);
+            return AlertDialog(
+              backgroundColor: theme.colorScheme.surface,
+              title: Text('自定义时间范围', style: TextStyle(color: theme.colorScheme.onSurface)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    title: Text('开始日期', style: TextStyle(color: theme.colorScheme.onSurface)),
+                    subtitle: Text(DateFormat('yyyy/MM/dd').format(tempStart), style: TextStyle(color: theme.colorScheme.primary)),
+                    trailing: Icon(Icons.calendar_today, color: theme.colorScheme.primary),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: ctx,
+                        initialDate: tempStart,
+                        firstDate: DateTime(2020),
+                        lastDate: tempEnd,
+                      );
+                      if (picked != null) {
+                        setDialogState(() => tempStart = picked);
+                      }
+                    },
+                  ),
+                  ListTile(
+                    title: Text('结束日期', style: TextStyle(color: theme.colorScheme.onSurface)),
+                    subtitle: Text(DateFormat('yyyy/MM/dd').format(tempEnd), style: TextStyle(color: theme.colorScheme.primary)),
+                    trailing: Icon(Icons.calendar_today, color: theme.colorScheme.primary),
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: ctx,
+                        initialDate: tempEnd,
+                        firstDate: tempStart,
+                        lastDate: today,
+                      );
+                      if (picked != null) {
+                        setDialogState(() => tempEnd = picked);
+                      }
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('确认'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == true) {
+      if (startDate.isAfter(endDate)) {
+        final temp = startDate;
+        startDate = endDate;
+        endDate = temp;
+      }
+      if (endDate.isAfter(today)) {
+        endDate = today;
+      }
+      setState(() {
+        _customStartDate = startDate;
+        _customEndDate = endDate;
+        _selectedTimeRange = 'custom';
+      });
+      _loadHistoryTrendData();
+    }
+  }
+
+  /// 构建专注时长趋势图
+  Widget _buildFocusTrendChart(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline,
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.trending_up,
+                size: 18,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '专注时长趋势',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (_isLoadingHistory && !_hasLoadedHistory)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (_historyTrendData.isEmpty)
+            SizedBox(
+              height: 200,
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.bar_chart,
+                      size: 48,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '暂无专注数据',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 250,
+              child: LineChart(
+                LineChartData(
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: true,
+                    horizontalInterval: 1800,
+                    verticalInterval: 1,
+                    getDrawingHorizontalLine: (value) {
+                      return FlLine(
+                        color: theme.colorScheme.outline.withOpacity(0.2),
+                        strokeWidth: 1,
+                      );
+                    },
+                    getDrawingVerticalLine: (value) {
+                      return FlLine(
+                        color: theme.colorScheme.outline.withOpacity(0.2),
+                        strokeWidth: 1,
+                      );
+                    },
+                  ),
+                  titlesData: FlTitlesData(
+                    show: true,
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 30,
+                        interval: 1,
+                        getTitlesWidget: (value, meta) {
+                          final index = value.toInt();
+                          if (index >= 0 && index < _historyTrendData.length) {
+                            final dateStr = _historyTrendData[index]['date'] as String;
+                            final date = DateTime.parse(dateStr);
+                            return Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Text(
+                                '${date.month}/${date.day}',
+                                style: TextStyle(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            );
+                          }
+                          return const Text('');
+                        },
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 50,
+                        interval: 1800,
+                        getTitlesWidget: (value, meta) {
+                          final minutes = (value / 60).round();
+                          return Text(
+                            '${minutes}m',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 10,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  borderData: FlBorderData(
+                    show: true,
+                    border: Border.all(
+                      color: theme.colorScheme.outline,
+                      width: 1,
+                    ),
+                  ),
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: _historyTrendData.asMap().entries.map((entry) {
+                        return FlSpot(
+                          entry.key.toDouble(),
+                          (entry.value['focusDuration'] as int).toDouble(),
+                        );
+                      }).toList(),
+                      isCurved: true,
+                      curveSmoothness: 0.3,
+                      color: theme.colorScheme.primary,
+                      barWidth: 3,
+                      dotData: const FlDotData(show: true),
+                      belowBarData: BarAreaData(
+                        show: true,
+                        gradient: LinearGradient(
+                          colors: [
+                            theme.colorScheme.primary.withOpacity(0.3),
+                            theme.colorScheme.primary.withOpacity(0.05),
+                          ],
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                        ),
+                      ),
+                    ),
+                  ],
+                  lineTouchData: LineTouchData(
+                    touchTooltipData: LineTouchTooltipData(
+                      getTooltipItems: (touchedSpots) {
+                        return touchedSpots.map((spot) {
+                          final index = spot.x.toInt();
+                          if (index >= 0 && index < _historyTrendData.length) {
+                            final data = _historyTrendData[index];
+                            final focusMinutes = (data['focusDuration'] as int) ~/ 60;
+                            return LineTooltipItem(
+                              '${data['date']}\n专注: ${focusMinutes}分钟',
+                              TextStyle(
+                                color: theme.colorScheme.onSurfaceVariant,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            );
+                          }
+                          return null;
+                        }).toList();
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建专注时段分布图
+  Widget _buildHourlyDistributionChart(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline,
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.schedule,
+                size: 18,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '专注时段分布',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (_isLoadingHistory && !_hasLoadedHistory)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (_hourlyDistribution.isEmpty)
+            SizedBox(
+              height: 200,
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.pie_chart_outline,
+                      size: 48,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '暂无分布数据',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 250,
+              child: BarChart(
+                BarChartData(
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: true,
+                    horizontalInterval: 5,
+                    getDrawingHorizontalLine: (value) {
+                      return FlLine(
+                        color: theme.colorScheme.outline.withOpacity(0.2),
+                        strokeWidth: 1,
+                      );
+                    },
+                    getDrawingVerticalLine: (value) {
+                      return FlLine(
+                        color: theme.colorScheme.outline.withOpacity(0.2),
+                        strokeWidth: 1,
+                      );
+                    },
+                  ),
+                  titlesData: FlTitlesData(
+                    show: true,
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 30,
+                        getTitlesWidget: (value, meta) {
+                          final hour = value.toInt();
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              '$hour',
+                              style: TextStyle(
+                                color: theme.colorScheme.onSurfaceVariant,
+                                fontSize: 10,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 30,
+                        interval: 5,
+                        getTitlesWidget: (value, meta) {
+                          return Text(
+                            value.toInt().toString(),
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: 10,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                  borderData: FlBorderData(
+                    show: true,
+                    border: Border.all(
+                      color: theme.colorScheme.outline,
+                      width: 1,
+                    ),
+                  ),
+                  barGroups: _hourlyDistribution.entries
+                      .where((entry) => entry.value > 0)
+                      .map((entry) {
+                    return BarChartGroupData(
+                      x: entry.key,
+                      barRods: [
+                        BarChartRodData(
+                          toY: entry.value.toDouble(),
+                          color: theme.colorScheme.secondary,
+                          width: 16,
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(4),
+                          ),
+                        ),
+                      ],
+                    );
+                  }).toList(),
+                  barTouchData: BarTouchData(
+                    touchTooltipData: BarTouchTooltipData(
+                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                        return BarTooltipItem(
+                          '${group.x}:00 - ${group.x + 1}:00\n${rod.toY.toInt()} 次专注',
+                          TextStyle(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建完成效率饼图
+  Widget _buildCompletionPieChart(ThemeData theme) {
+    final completed = _completionVsInterruption['completed'] ?? 0;
+    final interrupted = _completionVsInterruption['interrupted'] ?? 0;
+    final total = completed + interrupted;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: theme.colorScheme.outline,
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.check_circle_outline,
+                size: 18,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '专注效率',
+                style: TextStyle(
+                  color: theme.colorScheme.onSurface,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          if (_isLoadingHistory && !_hasLoadedHistory)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (total == 0)
+            SizedBox(
+              height: 200,
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.pie_chart_outline,
+                      size: 48,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '暂无效率数据',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Row(
+              children: [
+                // 饼图
+                Expanded(
+                  flex: 2,
+                  child: SizedBox(
+                    height: 200,
+                    child: PieChart(
+                      PieChartData(
+                        sectionsSpace: 2,
+                        centerSpaceRadius: 40,
+                        sections: [
+                          PieChartSectionData(
+                            value: completed.toDouble(),
+                            title: '${total > 0 ? (completed / total * 100).toStringAsFixed(1) : 0}%',
+                            color: const Color(0xFF2A9D8F),
+                            radius: 60,
+                            titleStyle: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          PieChartSectionData(
+                            value: interrupted.toDouble(),
+                            title: '${total > 0 ? (interrupted / total * 100).toStringAsFixed(1) : 0}%',
+                            color: const Color(0xFFE76F51),
+                            radius: 60,
+                            titleStyle: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                // 图例
+                Expanded(
+                  flex: 1,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildLegendItem(
+                        const Color(0xFF2A9D8F),
+                        '完成',
+                        completed,
+                        theme,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildLegendItem(
+                        const Color(0xFFE76F51),
+                        '中断',
+                        interrupted,
+                        theme,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        '总计: $total',
+                        style: TextStyle(
+                          color: theme.colorScheme.onSurface,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建图例项
+  Widget _buildLegendItem(Color color, String label, int count, ThemeData theme) {
+    return Row(
+      children: [
+        Container(
+          width: 16,
+          height: 16,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              color: theme.colorScheme.onSurface,
+              fontSize: 12,
+            ),
+          ),
+        ),
+        Text(
+          '$count',
+          style: TextStyle(
+            color: theme.colorScheme.onSurface,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
+    );
+  }
+}
