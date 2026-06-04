@@ -44,6 +44,8 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
   String _selectedAudio = 'default'; // 选中的音频
   bool _isStatsExpanded = true;
   bool _isFocusMode = true; // 波动开关：true=专注模式，false=休息模式
+  int _focusHours = 0; // 默认0小时专注
+  int _restHours = 0; // 默认0小时休息
   int _focusDuration = 25; // 默认25分钟专注
   int _restDuration = 5; // 默认5分钟休息
   int _focusSeconds = 0; // 默认0秒专注
@@ -53,13 +55,7 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
   final TextEditingController _interruptionController =
       TextEditingController(); // 中断原因输入控制器
   
-  // 时间编辑相关状态
-  bool _isEditingMinutes = false; // 是否正在编辑分钟
-  bool _isEditingSeconds = false; // 是否正在编辑秒
-  final TextEditingController _minutesController = TextEditingController(); // 分钟输入控制器
-  final TextEditingController _secondsController = TextEditingController(); // 秒输入控制器
-  final FocusNode _minutesFocusNode = FocusNode();
-  final FocusNode _secondsFocusNode = FocusNode();
+  // 时间编辑相关状态（对话框内使用局部控制器，无需类级别状态）
 
   // 统计数据状态
   Map<String, dynamic> _todayFocusStats = {
@@ -546,10 +542,6 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
   @override
   void dispose() {
     _interruptionController.dispose();
-    _minutesController.dispose();
-    _secondsController.dispose();
-    _minutesFocusNode.dispose();
-    _secondsFocusNode.dispose();
     super.dispose();
   }
 
@@ -644,6 +636,146 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
         );
       },
     );
+  }
+
+  /// 显示时间编辑对话框（点击圆环中心时间触发）
+  void _showTimeEditDialog(BuildContext context) {
+    int tempHours = _isFocusMode ? _focusHours : _restHours;
+    int tempMinutes = _isFocusMode ? _focusDuration : _restDuration;
+    int tempSeconds = _isFocusMode ? _focusSeconds : _restSeconds;
+    final hoursController = TextEditingController(text: tempHours.toString());
+    final minutesController = TextEditingController(text: tempMinutes.toString());
+    final secondsController = TextEditingController(text: tempSeconds.toString());
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(_isFocusMode ? '设置专注时长' : '设置休息时长'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // 小时
+                  SizedBox(
+                    width: 64,
+                    child: TextField(
+                      controller: hoursController,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+                      decoration: const InputDecoration(
+                        labelText: '时',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(vertical: 8),
+                      ),
+                      onChanged: (value) {
+                        tempHours = (int.tryParse(value) ?? 0).clamp(0, 23);
+                        if (tempHours.toString() != value) {
+                          hoursController.text = tempHours.toString();
+                          hoursController.selection = TextSelection.fromPosition(
+                            TextPosition(offset: hoursController.text.length),
+                          );
+                        }
+                      },
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(':', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
+                  ),
+                  // 分钟
+                  SizedBox(
+                    width: 64,
+                    child: TextField(
+                      controller: minutesController,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+                      decoration: const InputDecoration(
+                        labelText: '分',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(vertical: 8),
+                      ),
+                      onChanged: (value) {
+                        tempMinutes = (int.tryParse(value) ?? 0).clamp(0, 59);
+                        if (tempMinutes.toString() != value) {
+                          minutesController.text = tempMinutes.toString();
+                          minutesController.selection = TextSelection.fromPosition(
+                            TextPosition(offset: minutesController.text.length),
+                          );
+                        }
+                      },
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(':', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
+                  ),
+                  // 秒
+                  SizedBox(
+                    width: 64,
+                    child: TextField(
+                      controller: secondsController,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+                      decoration: const InputDecoration(
+                        labelText: '秒',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(vertical: 8),
+                      ),
+                      onChanged: (value) {
+                        tempSeconds = (int.tryParse(value) ?? 0).clamp(0, 59);
+                        if (tempSeconds.toString() != value) {
+                          secondsController.text = tempSeconds.toString();
+                          secondsController.selection = TextSelection.fromPosition(
+                            TextPosition(offset: secondsController.text.length),
+                          );
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                // 确保至少1秒
+                if (tempHours == 0 && tempMinutes == 0 && tempSeconds == 0) {
+                  tempMinutes = 25;
+                }
+                setState(() {
+                  if (_isFocusMode) {
+                    _focusHours = tempHours;
+                    _focusDuration = tempMinutes;
+                    _focusSeconds = tempSeconds;
+                  } else {
+                    _restHours = tempHours;
+                    _restDuration = tempMinutes;
+                    _restSeconds = tempSeconds;
+                  }
+                });
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('确定'),
+            ),
+          ],
+        );
+      },
+    ).then((_) {
+      hoursController.dispose();
+      minutesController.dispose();
+      secondsController.dispose();
+    });
   }
 
   /// 显示时间选择对话框
@@ -1038,9 +1170,9 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
               String statusText = '准备开始';
               Color statusColor = theme.colorScheme.primary;
               int remainingTime =
-                  _isFocusMode ? _focusDuration * 60 + _focusSeconds : _restDuration * 60 + _restSeconds;
+                  _isFocusMode ? _focusHours * 3600 + _focusDuration * 60 + _focusSeconds : _restHours * 3600 + _restDuration * 60 + _restSeconds;
               int totalTime =
-                  _isFocusMode ? _focusDuration * 60 + _focusSeconds : _restDuration * 60 + _restSeconds;
+                  _isFocusMode ? _focusHours * 3600 + _focusDuration * 60 + _focusSeconds : _restHours * 3600 + _restDuration * 60 + _restSeconds;
 
               bool isRunning = false;
 
@@ -1065,11 +1197,12 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                 isRunning = false;
                 statusText = '完成';
                 statusColor = theme.colorScheme.primary;
-                remainingTime = _isFocusMode ? _focusDuration * 60 + _focusSeconds : _restDuration * 60 + _restSeconds;
+                remainingTime = _isFocusMode ? _focusHours * 3600 + _focusDuration * 60 + _focusSeconds : _restHours * 3600 + _restDuration * 60 + _restSeconds;
                 totalTime = remainingTime;
               }
 
-              final minutes = (remainingTime ~/ 60).toString().padLeft(2, '0');
+              final hours = (remainingTime ~/ 3600).toString().padLeft(2, '0');
+              final minutes = ((remainingTime % 3600) ~/ 60).toString().padLeft(2, '0');
               final seconds = (remainingTime % 60).toString().padLeft(2, '0');
 
               // 计算三个圆环的进度
@@ -1133,22 +1266,8 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                                   height: finalClockSize,
                                   child: GestureDetector(
                                     onTap: () {
-                                      if (_isEditingMinutes || _isEditingSeconds) {
-                                        int newMinutes = int.tryParse(_minutesController.text) ?? 0;
-                                        newMinutes = newMinutes.clamp(0, 99);
-                                        int newSeconds = int.tryParse(_secondsController.text) ?? 0;
-                                        newSeconds = newSeconds.clamp(0, 59);
-                                        setState(() {
-                                          if (_isFocusMode) {
-                                            _focusDuration = newMinutes;
-                                            _focusSeconds = newSeconds;
-                                          } else {
-                                            _restDuration = newMinutes;
-                                            _restSeconds = newSeconds;
-                                          }
-                                          _isEditingMinutes = false;
-                                          _isEditingSeconds = false;
-                                        });
+                                      if (state is PomodoroInitial || state is PomodoroCompleted) {
+                                        _showTimeEditDialog(context);
                                       }
                                     },
                                     child: Stack(
@@ -1219,191 +1338,20 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                                             MainAxisAlignment.center,
                                         children: [
                                           // 可点击的时间显示
-                                          Row(
-                                            mainAxisAlignment: MainAxisAlignment.center,
-                                            children: [
-                                              // 分钟部分
-                                              GestureDetector(
-                                                onTap: () {
-                                                  if (state is PomodoroInitial || state is PomodoroCompleted) {
-                                                    setState(() {
-                                                      _isEditingMinutes = true;
-                                                      _isEditingSeconds = false;
-                                                      _minutesController.text = minutes;
-                                                    });
-                                                    Future.delayed(const Duration(milliseconds: 100), () {
-                                                      if (mounted) {
-                                                        FocusScope.of(context).requestFocus(_minutesFocusNode);
-                                                      }
-                                                    });
-                                                  }
-                                                },
-                                                child: _isEditingMinutes
-                                                    ? Container(
-                                                        width: finalClockSize * 0.25,
-                                                        height: finalClockSize * 0.3,
-                                                        decoration: BoxDecoration(
-                                                          color: theme.colorScheme.surface,
-                                                          borderRadius: BorderRadius.circular(8),
-                                                          border: Border.all(
-                                                            color: theme.colorScheme.primary,
-                                                            width: 2,
-                                                          ),
-                                                        ),
-                                                        child: TextField(
-                                                          controller: _minutesController,
-                                                          focusNode: _minutesFocusNode,
-                                                          autofocus: true,
-                                                          keyboardType: TextInputType.number,
-                                                          textAlign: TextAlign.center,
-                                                          style: TextStyle(
-                                                            fontSize: finalClockSize * 0.25,
-                                                            fontWeight: FontWeight.w700,
-                                                            color: theme.colorScheme.onSurface,
-                                                          ),
-                                                          decoration: const InputDecoration(
-                                                            border: InputBorder.none,
-                                                            contentPadding: EdgeInsets.zero,
-                                                          ),
-                                                          onSubmitted: (value) {
-                                                            // 提交分钟输入
-                                                            int newMinutes = int.tryParse(value) ?? 0;
-                                                            newMinutes = newMinutes.clamp(0, 99);
-                                                            setState(() {
-                                                              if (_isFocusMode) {
-                                                                _focusDuration = newMinutes;
-                                                              } else {
-                                                                _restDuration = newMinutes;
-                                                              }
-                                                              _isEditingMinutes = false;
-                                                            });
-                                                          },
-                                                          onTapOutside: (event) {
-                                                            // 点击外部关闭编辑
-                                                            int newMinutes = int.tryParse(_minutesController.text) ?? 0;
-                                                            newMinutes = newMinutes.clamp(0, 99);
-                                                            setState(() {
-                                                              if (_isFocusMode) {
-                                                                _focusDuration = newMinutes;
-                                                              } else {
-                                                                _restDuration = newMinutes;
-                                                              }
-                                                              _isEditingMinutes = false;
-                                                            });
-                                                          },
-                                                        ),
-                                                      )
-                                                    : Container(
-                                                        padding: EdgeInsets.symmetric(
-                                                          horizontal: finalClockSize * 0.02,
-                                                          vertical: finalClockSize * 0.01,
-                                                        ),
-                                                        child: Text(
-                                                          minutes,
-                                                          style: TextStyle(
-                                                            fontSize: finalClockSize * 0.25,
-                                                            fontWeight: FontWeight.w700,
-                                                            color:
-                                                                theme.colorScheme.onSurface,
-                                                          ),
-                                                        ),
-                                                      ),
+                                          GestureDetector(
+                                            onTap: () {
+                                              if (state is PomodoroInitial || state is PomodoroCompleted) {
+                                                _showTimeEditDialog(context);
+                                              }
+                                            },
+                                            child: Text(
+                                              '$hours:$minutes:$seconds',
+                                              style: TextStyle(
+                                                fontSize: finalClockSize * 0.18,
+                                                fontWeight: FontWeight.w700,
+                                                color: theme.colorScheme.onSurface,
                                               ),
-                                              Text(
-                                                ':',
-                                                style: TextStyle(
-                                                  fontSize: finalClockSize * 0.25,
-                                                  fontWeight: FontWeight.w700,
-                                                  color: theme.colorScheme.onSurface,
-                                                ),
-                                              ),
-                                              // 秒部分
-                                              GestureDetector(
-                                                onTap: () {
-                                                  if (state is PomodoroInitial || state is PomodoroCompleted) {
-                                                    setState(() {
-                                                      _isEditingSeconds = true;
-                                                      _isEditingMinutes = false;
-                                                      _secondsController.text = seconds;
-                                                    });
-                                                    Future.delayed(const Duration(milliseconds: 100), () {
-                                                      if (mounted) {
-                                                        FocusScope.of(context).requestFocus(_secondsFocusNode);
-                                                      }
-                                                    });
-                                                  }
-                                                },
-                                                child: _isEditingSeconds
-                                                    ? Container(
-                                                        width: finalClockSize * 0.25,
-                                                        height: finalClockSize * 0.3,
-                                                        decoration: BoxDecoration(
-                                                          color: theme.colorScheme.surface,
-                                                          borderRadius: BorderRadius.circular(8),
-                                                          border: Border.all(
-                                                            color: theme.colorScheme.primary,
-                                                            width: 2,
-                                                          ),
-                                                        ),
-                                                        child: TextField(
-                                                          controller: _secondsController,
-                                                          focusNode: _secondsFocusNode,
-                                                          autofocus: true,
-                                                          keyboardType: TextInputType.number,
-                                                          textAlign: TextAlign.center,
-                                                          style: TextStyle(
-                                                            fontSize: finalClockSize * 0.25,
-                                                            fontWeight: FontWeight.w700,
-                                                            color: theme.colorScheme.onSurface,
-                                                          ),
-                                                          decoration: const InputDecoration(
-                                                            border: InputBorder.none,
-                                                            contentPadding: EdgeInsets.zero,
-                                                          ),
-                                                          onSubmitted: (value) {
-                                                            // 提交秒输入
-                                                            int newSeconds = int.tryParse(value) ?? 0;
-                                                            newSeconds = newSeconds.clamp(0, 59);
-                                                            setState(() {
-                                                              if (_isFocusMode) {
-                                                                _focusSeconds = newSeconds;
-                                                              } else {
-                                                                _restSeconds = newSeconds;
-                                                              }
-                                                              _isEditingSeconds = false;
-                                                            });
-                                                          },
-                                                          onTapOutside: (event) {
-                                                            // 点击外部关闭编辑
-                                                            int newSeconds = int.tryParse(_secondsController.text) ?? 0;
-                                                            newSeconds = newSeconds.clamp(0, 59);
-                                                            setState(() {
-                                                              if (_isFocusMode) {
-                                                                _focusSeconds = newSeconds;
-                                                              } else {
-                                                                _restSeconds = newSeconds;
-                                                              }
-                                                              _isEditingSeconds = false;
-                                                            });
-                                                          },
-                                                        ),
-                                                      )
-                                                    : Container(
-                                                        padding: EdgeInsets.symmetric(
-                                                          horizontal: finalClockSize * 0.02,
-                                                          vertical: finalClockSize * 0.01,
-                                                        ),
-                                                        child: Text(
-                                                          seconds,
-                                                          style: TextStyle(
-                                                            fontSize: finalClockSize * 0.25,
-                                                            fontWeight: FontWeight.w700,
-                                                            color: theme.colorScheme.onSurface,
-                                                          ),
-                                                        ),
-                                                      ),
-                                              ),
-                                            ],
+                                            ),
                                           ).animate().fadeIn(
                                               duration: const Duration(
                                                   milliseconds: 500)),
@@ -1411,7 +1359,9 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                                               height: finalClockSize *
                                                   0.027), // 8/300
                                           Text(
-                                            '${totalTime ~/ 60} 分钟',
+                                            totalTime >= 3600
+                                                ? '${totalTime ~/ 3600} 小时 ${(totalTime % 3600) ~/ 60} 分钟'
+                                                : '${totalTime ~/ 60} 分钟',
                                             style: TextStyle(
                                               fontSize: finalClockSize *
                                                   0.08, // 增大字体大小
@@ -1459,11 +1409,11 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                                           context.read<PomodoroBloc>().add(
                                                 StartPomodoro(
                                                   duration: _isFocusMode
-                                                      ? _focusDuration * 60 + _focusSeconds
-                                                      : _restDuration * 60 + _restSeconds,
+                                                      ? _focusHours * 3600 + _focusDuration * 60 + _focusSeconds
+                                                      : _restHours * 3600 + _restDuration * 60 + _restSeconds,
                                                   restDuration: _isFocusMode
-                                                      ? _restDuration * 60 + _restSeconds
-                                                      : _focusDuration * 60 + _focusSeconds,
+                                                      ? _restHours * 3600 + _restDuration * 60 + _restSeconds
+                                                      : _focusHours * 3600 + _focusDuration * 60 + _focusSeconds,
                                                   initialState: _isFocusMode
                                                       ? PomodoroState.focusing
                                                       : PomodoroState.resting,
@@ -1738,22 +1688,8 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                           height: finalClockSize,
                           child: GestureDetector(
                             onTap: () {
-                              if (_isEditingMinutes || _isEditingSeconds) {
-                                int newMinutes = int.tryParse(_minutesController.text) ?? 0;
-                                newMinutes = newMinutes.clamp(0, 99);
-                                int newSeconds = int.tryParse(_secondsController.text) ?? 0;
-                                newSeconds = newSeconds.clamp(0, 59);
-                                setState(() {
-                                  if (_isFocusMode) {
-                                    _focusDuration = newMinutes;
-                                    _focusSeconds = newSeconds;
-                                  } else {
-                                    _restDuration = newMinutes;
-                                    _restSeconds = newSeconds;
-                                  }
-                                  _isEditingMinutes = false;
-                                  _isEditingSeconds = false;
-                                });
+                              if (state is PomodoroInitial || state is PomodoroCompleted) {
+                                _showTimeEditDialog(context);
                               }
                             },
                             child: Stack(
@@ -1815,197 +1751,29 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   // 可点击的时间显示
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      // 分钟部分
-                                      GestureDetector(
-                                        onTap: () {
-                                          if (state is PomodoroInitial || state is PomodoroCompleted) {
-                                            setState(() {
-                                              _isEditingMinutes = true;
-                                              _isEditingSeconds = false;
-                                              _minutesController.text = minutes;
-                                            });
-                                            Future.delayed(const Duration(milliseconds: 100), () {
-                                              if (mounted) {
-                                                FocusScope.of(context).requestFocus(_minutesFocusNode);
-                                              }
-                                            });
-                                          }
-                                        },
-                                        child: _isEditingMinutes
-                                            ? Container(
-                                                width: finalClockSize * 0.25,
-                                                height: finalClockSize * 0.3,
-                                                decoration: BoxDecoration(
-                                                  color: theme.colorScheme.surface,
-                                                  borderRadius: BorderRadius.circular(8),
-                                                  border: Border.all(
-                                                    color: theme.colorScheme.primary,
-                                                    width: 2,
-                                                  ),
-                                                ),
-                                                child: TextField(
-                                                  controller: _minutesController,
-                                                  focusNode: _minutesFocusNode,
-                                                  autofocus: true,
-                                                  keyboardType: TextInputType.number,
-                                                  textAlign: TextAlign.center,
-                                                  style: TextStyle(
-                                                    fontSize: finalClockSize * 0.213,
-                                                    fontWeight: FontWeight.w700,
-                                                    color: theme.colorScheme.onSurface,
-                                                  ),
-                                                  decoration: const InputDecoration(
-                                                    border: InputBorder.none,
-                                                    contentPadding: EdgeInsets.zero,
-                                                  ),
-                                                  onSubmitted: (value) {
-                                                    // 提交分钟输入
-                                                    int newMinutes = int.tryParse(value) ?? 0;
-                                                    newMinutes = newMinutes.clamp(0, 99);
-                                                    setState(() {
-                                                      if (_isFocusMode) {
-                                                        _focusDuration = newMinutes;
-                                                      } else {
-                                                        _restDuration = newMinutes;
-                                                      }
-                                                      _isEditingMinutes = false;
-                                                    });
-                                                  },
-                                                  onTapOutside: (event) {
-                                                    // 点击外部关闭编辑
-                                                    int newMinutes = int.tryParse(_minutesController.text) ?? 0;
-                                                    newMinutes = newMinutes.clamp(0, 99);
-                                                    setState(() {
-                                                      if (_isFocusMode) {
-                                                        _focusDuration = newMinutes;
-                                                      } else {
-                                                        _restDuration = newMinutes;
-                                                      }
-                                                      _isEditingMinutes = false;
-                                                    });
-                                                  },
-                                                ),
-                                              )
-                                            : Container(
-                                                padding: EdgeInsets.symmetric(
-                                                  horizontal: finalClockSize * 0.02,
-                                                  vertical: finalClockSize * 0.01,
-                                                ),
-                                                child: Text(
-                                                  minutes,
-                                                  style: TextStyle(
-                                                    fontSize: finalClockSize * 0.213,
-                                                    fontWeight: FontWeight.w700,
-                                                    color: theme.colorScheme.onSurface,
-                                                  ),
-                                                ),
-                                              ),
+                                  GestureDetector(
+                                    onTap: () {
+                                      if (state is PomodoroInitial || state is PomodoroCompleted) {
+                                        _showTimeEditDialog(context);
+                                      }
+                                    },
+                                    child: Text(
+                                      '$hours:$minutes:$seconds',
+                                      style: TextStyle(
+                                        fontSize: finalClockSize * 0.15,
+                                        fontWeight: FontWeight.w700,
+                                        color: theme.colorScheme.onSurface,
                                       ),
-                                      Text(
-                                        ':',
-                                        style: TextStyle(
-                                          fontSize: finalClockSize * 0.213,
-                                          fontWeight: FontWeight.w700,
-                                          color: theme.colorScheme.onSurface,
-                                        ),
-                                      ),
-                                      // 秒部分
-                                      GestureDetector(
-                                        onTap: () {
-                                          if (state is PomodoroInitial || state is PomodoroCompleted) {
-                                            setState(() {
-                                              _isEditingSeconds = true;
-                                              _isEditingMinutes = false;
-                                              _secondsController.text = seconds;
-                                            });
-                                            Future.delayed(const Duration(milliseconds: 100), () {
-                                              if (mounted) {
-                                                FocusScope.of(context).requestFocus(_secondsFocusNode);
-                                              }
-                                            });
-                                          }
-                                        },
-                                        child: _isEditingSeconds
-                                            ? Container(
-                                                width: finalClockSize * 0.25,
-                                                height: finalClockSize * 0.3,
-                                                decoration: BoxDecoration(
-                                                  color: theme.colorScheme.surface,
-                                                  borderRadius: BorderRadius.circular(8),
-                                                  border: Border.all(
-                                                    color: theme.colorScheme.primary,
-                                                    width: 2,
-                                                  ),
-                                                ),
-                                                child: TextField(
-                                                  controller: _secondsController,
-                                                  focusNode: _secondsFocusNode,
-                                                  autofocus: true,
-                                                  keyboardType: TextInputType.number,
-                                                  textAlign: TextAlign.center,
-                                                  style: TextStyle(
-                                                    fontSize: finalClockSize * 0.213,
-                                                    fontWeight: FontWeight.w700,
-                                                    color: theme.colorScheme.onSurface,
-                                                  ),
-                                                  decoration: const InputDecoration(
-                                                    border: InputBorder.none,
-                                                    contentPadding: EdgeInsets.zero,
-                                                  ),
-                                                  onSubmitted: (value) {
-                                                    // 提交秒输入
-                                                    int newSeconds = int.tryParse(value) ?? 0;
-                                                    newSeconds = newSeconds.clamp(0, 59);
-                                                    setState(() {
-                                                      if (_isFocusMode) {
-                                                        _focusSeconds = newSeconds;
-                                                      } else {
-                                                        _restSeconds = newSeconds;
-                                                      }
-                                                      _isEditingSeconds = false;
-                                                    });
-                                                  },
-                                                  onTapOutside: (event) {
-                                                    // 点击外部关闭编辑
-                                                    int newSeconds = int.tryParse(_secondsController.text) ?? 0;
-                                                    newSeconds = newSeconds.clamp(0, 59);
-                                                    setState(() {
-                                                      if (_isFocusMode) {
-                                                        _focusSeconds = newSeconds;
-                                                      } else {
-                                                        _restSeconds = newSeconds;
-                                                      }
-                                                      _isEditingSeconds = false;
-                                                    });
-                                                  },
-                                                ),
-                                              )
-                                            : Container(
-                                                padding: EdgeInsets.symmetric(
-                                                  horizontal: finalClockSize * 0.02,
-                                                  vertical: finalClockSize * 0.01,
-                                                ),
-                                                child: Text(
-                                                  seconds,
-                                                  style: TextStyle(
-                                                    fontSize: finalClockSize * 0.213,
-                                                    fontWeight: FontWeight.w700,
-                                                    color: theme.colorScheme.onSurface,
-                                                  ),
-                                                ),
-                                              ),
-                                      ),
-                                    ],
+                                    ),
                                   ).animate().fadeIn(
                                       duration: const Duration(
                                           milliseconds: 500)),
                                   SizedBox(
                                       height: finalClockSize * 0.027), // 8/300
                                   Text(
-                                    '${totalTime ~/ 60} 分钟',
+                                    totalTime >= 3600
+                                        ? '${totalTime ~/ 3600} 小时 ${(totalTime % 3600) ~/ 60} 分钟'
+                                        : '${totalTime ~/ 60} 分钟',
                                     style: TextStyle(
                                       fontSize: finalClockSize * 0.06, // 18/300
                                       color: theme.colorScheme.onSurface
@@ -2051,11 +1819,11 @@ class _PomodoroViewState extends ConsumerState<PomodoroView> {
                                           context.read<PomodoroBloc>().add(
                                                 StartPomodoro(
                                                   duration: _isFocusMode
-                                                      ? _focusDuration * 60 + _focusSeconds
-                                                      : _restDuration * 60 + _restSeconds,
+                                                      ? _focusHours * 3600 + _focusDuration * 60 + _focusSeconds
+                                                      : _restHours * 3600 + _restDuration * 60 + _restSeconds,
                                                   restDuration: _isFocusMode
-                                                      ? _restDuration * 60 + _restSeconds
-                                                      : _focusDuration * 60 + _focusSeconds,
+                                                      ? _restHours * 3600 + _restDuration * 60 + _restSeconds
+                                                      : _focusHours * 3600 + _focusDuration * 60 + _focusSeconds,
                                                   initialState: _isFocusMode
                                                       ? PomodoroState.focusing
                                                       : PomodoroState.resting,
